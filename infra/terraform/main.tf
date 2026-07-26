@@ -15,6 +15,7 @@ locals {
     "knowledge-service",
     "work-order-service",
     "metrics-service",
+    "event-worker",
   ])
   images = setunion(local.services, toset(["web"]))
 
@@ -158,11 +159,21 @@ resource "aws_dynamodb_table" "domain" {
   }
 }
 
+resource "aws_sqs_queue" "events_dlq" {
+  name                      = "${local.name}-events-dlq"
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
+}
+
 resource "aws_sqs_queue" "events" {
   name                       = "${local.name}-events"
   visibility_timeout_seconds = 60
   message_retention_seconds  = 1209600
   sqs_managed_sse_enabled    = true
+  redrive_policy            = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.events_dlq.arn
+    maxReceiveCount     = 3
+  })
 }
 
 resource "aws_sns_topic" "alerts" {

@@ -12,6 +12,7 @@ x-app-environment: &app-environment
   DYNAMODB_TABLE: ${DYNAMODB_TABLE:-axsentinel-domain}
   DOCUMENTS_BUCKET: ${S3_BUCKET:-axsentinel-local}
   EVENTS_QUEUE: ${SQS_QUEUE:-axsentinel-events}
+  EVENTS_DLQ: ${SQS_DLQ:-axsentinel-events-dlq}
   ALERTS_TOPIC: ${SNS_TOPIC:-axsentinel-alerts}
 
 x-app-base: &app-base
@@ -46,6 +47,7 @@ services:
       EKS_START_K3D_LB_INGRESS: "1"
       S3_BUCKET: ${S3_BUCKET:-axsentinel-local}
       SQS_QUEUE: ${SQS_QUEUE:-axsentinel-events}
+      SQS_DLQ: ${SQS_DLQ:-axsentinel-events-dlq}
       SNS_TOPIC: ${SNS_TOPIC:-axsentinel-alerts}
       DYNAMODB_TABLE: ${DYNAMODB_TABLE:-axsentinel-domain}
       SECRET_NAME: ${SECRET_NAME:-axsentinel/local}
@@ -126,6 +128,16 @@ services:
     ports:
       - "127.0.0.1:8106:8080"
 
+  event-worker:
+    <<: *app-base
+    image: axsentinel/event-worker:local
+    build:
+      context: .
+      args:
+        SERVICE: event_worker
+    ports:
+      - "127.0.0.1:8107:8080"
+
   web:
     image: axsentinel/web:local
     build:
@@ -147,6 +159,8 @@ services:
       work-order-service:
         condition: service_healthy
       metrics-service:
+        condition: service_healthy
+      event-worker:
         condition: service_healthy
     ports:
       - "127.0.0.1:3000:80"

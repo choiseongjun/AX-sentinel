@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     aws_endpoint_url: str | None = None
     dynamodb_table: str = "axsentinel-domain"
     events_queue: str = "axsentinel-events"
+    events_dlq: str = "axsentinel-events-dlq"
+    event_wait_time_seconds: int = 10
     alerts_topic: str = "axsentinel-alerts"
     websocket_broker: str = "memory"
     redis_url: str | None = None

@@ -18,6 +18,7 @@ $Services = @(
     "knowledge-service",
     "work-order-service",
     "metrics-service",
+    "event-worker",
     "web"
 )
 

@@ -8,6 +8,8 @@ global:
   awsAccessKeyId: test
   awsSecretAccessKey: test
   eventsQueue: axsentinel-events
+  eventsDlq: axsentinel-events-dlq
+  eventWaitTimeSeconds: 10
   alertsTopic: axsentinel-alerts
   websocketBroker: redis
   redisUrl: redis://redis:6379/0
@@ -46,6 +48,11 @@ services:
     port: 8080
     replicas: 1
     path: /api/v1/metrics
+  - name: event-worker
+    image: axsentinel/event-worker
+    port: 8080
+    replicas: 1
+    path: /api/v1/events
 
 web:
   name: web

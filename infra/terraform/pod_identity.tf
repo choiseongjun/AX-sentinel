@@ -39,7 +39,7 @@ data "aws_iam_policy_document" "service" {
   }
 
   dynamic "statement" {
-    for_each = contains(["incident-service", "work-order-service"], each.key) ? [1] : []
+    for_each = contains(["incident-service", "work-order-service", "event-worker"], each.key) ? [1] : []
     content {
       sid       = "EventQueue"
       effect    = "Allow"

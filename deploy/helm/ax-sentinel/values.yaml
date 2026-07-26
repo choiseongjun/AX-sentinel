@@ -8,6 +8,8 @@ global:
   awsAccessKeyId: ""
   awsSecretAccessKey: ""
   eventsQueue: ax-sentinel-dev-events
+  eventsDlq: ax-sentinel-dev-events-dlq
+  eventWaitTimeSeconds: 10
   alertsTopic: ax-sentinel-dev-alerts
   websocketBroker: memory
   redisUrl: ""
@@ -53,6 +55,11 @@ services:
     port: 8080
     replicas: 2
     path: /api/v1/metrics
+  - name: event-worker
+    image: axsentinel/event-worker
+    port: 8080
+    replicas: 2
+    path: /api/v1/events
 
 web:
   name: web

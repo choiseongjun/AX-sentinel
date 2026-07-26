@@ -12,13 +12,14 @@ AI는 설비를 직접 조작하지 않습니다. 분석 결과는 운영 관리
 
 ## 현재 구현 범위
 
-- Python 3.12 및 FastAPI 기반 마이크로서비스 6개
+- Python 3.12 및 FastAPI 기반 마이크로서비스 7개
 - React 19, TypeScript, Vite 기반 운영 웹 콘솔
 - 센서 데이터 수신, DynamoDB 저장 및 WebSocket 실시간 모니터링
 - 임계치 초과 자동 감지, 가상 장애 생성과 장애 상태 관리
 - Amazon Bedrock Converse 기반 장애 원인 및 조치안 생성
 - S3 문서 저장과 Bedrock Knowledge Bases 기반 RAG
-- SQS 도메인 이벤트, SNS 위험 경보와 Redis Pub/Sub 다중 Pod fan-out
+- SQS 도메인 이벤트 Worker, 3회 재시도·DLQ, SNS 위험 경보와 Redis Pub/Sub
+  다중 Pod fan-out
 - 관리자 승인·수정 승인·반려, 작업 티켓, 증빙 사진과 복구 확인
 - AI 분석 정확도 및 조치안 유용성 피드백
 - 서비스별 Prometheus HTTP 메트릭
@@ -73,6 +74,7 @@ flowchart TB
     Web --> Knowledge["Knowledge Service"]
     Web --> Work["Work Order Service"]
     Web --> Metrics["Metrics Service"]
+    Web --> EventWorker["Event Worker"]
 
     Asset --> DDB["DynamoDB"]
     Incident --> DDB
@@ -80,6 +82,7 @@ flowchart TB
     Knowledge --> DDB
     Work --> DDB
     Metrics --> DDB
+    EventWorker --> DDB
 
     Knowledge --> S3["S3 Documents"]
     Knowledge --> KB["Bedrock Knowledge Base"]
@@ -88,6 +91,8 @@ flowchart TB
     AI --> Bedrock["Amazon Bedrock Converse"]
 
     Incident --> SQS["SQS Events"]
+    SQS --> EventWorker
+    SQS --> DLQ["SQS Dead-letter Queue"]
     Incident --> SNS["SNS Alerts"]
     Incident <--> Redis["Redis Pub/Sub"]
 
@@ -132,6 +137,7 @@ EC2 Managed Node Group은 Pod가 공유하는 컴퓨팅 기반입니다.
 | `knowledge-service` | 문서 업로드, 검색, Bedrock 색인 동기화 | `http://localhost:8104/docs` |
 | `work-order-service` | 승인, 작업 티켓, 현장 작업 완료 | `http://localhost:8105/docs` |
 | `metrics-service` | AI 평가 피드백과 운영 지표 | `http://localhost:8106/docs` |
+| `event-worker` | SQS 이벤트 소비, 처리 이력, 재시도와 DLQ | `http://localhost:8107/docs` |
 | `web` | React 운영 콘솔과 API 프록시 | `http://localhost:3000` |
 | `localstack` | 로컬 AWS 호환 게이트웨이 | `http://localhost:4566` |
 
@@ -226,7 +232,7 @@ http://localhost:3000
 ### LocalStack EKS에 전체 서비스 배포
 
 실제 AWS 계정 대신 LocalStack Pro가 제공하는 EKS 환경에 클러스터와 Managed
-Node Group을 만들고, 6개 FastAPI 서비스와 React 웹을 각각 Kubernetes
+Node Group을 만들고, 7개 FastAPI 서비스와 React 웹을 각각 Kubernetes
 Deployment로 실행할 수 있습니다. LocalStack 인증 토큰은 현재 PowerShell
 세션의 환경 변수로만 전달하며 저장소에 기록하지 않습니다.
 
@@ -318,6 +324,7 @@ Copy-Item .env.example .env
 | `BEDROCK_KNOWLEDGE_BASE_ID` | 없음 | Bedrock Knowledge Base ID |
 | `BEDROCK_DATA_SOURCE_ID` | 없음 | Bedrock Data Source ID |
 | `SQS_QUEUE` | `axsentinel-events` | 이벤트 큐 |
+| `SQS_DLQ` | `axsentinel-events-dlq` | 3회 처리 실패 메시지 격리 큐 |
 | `SNS_TOPIC` | `axsentinel-alerts` | 경보 토픽 |
 | `WEBSOCKET_BROKER` | `memory` | `memory` 또는 `redis` |
 | `REDIS_URL` | 없음 | Redis Pub/Sub 접속 URL |
@@ -375,6 +382,8 @@ Authorization Code + PKCE를 사용하며 client secret을 웹에 포함하지 �
 | `POST` | `/api/v1/work-orders/{id}/complete` | 현장 작업자, 시스템 관리자 | 현장 작업 완료 |
 | `POST` | `/api/v1/feedback` | 관리자, 작업자 | AI 분석 평가 |
 | `GET` | `/api/v1/metrics/summary` | 인증 사용자 | AI 운영 지표 |
+| `GET` | `/api/v1/events/worker/status` | 운영 관리자, 시스템 관리자 | Worker와 큐 상태 |
+| `GET` | `/api/v1/events/processed` | 운영 관리자, 시스템 관리자 | 이벤트 처리 이력 |
 
 표의 권한은 운영 환경 기준입니다. `AUTH_MODE=disabled`인 로컬 환경에서는
 개발용 principal이 사용됩니다.
@@ -501,6 +510,7 @@ LocalStack 시작 시 다음 리소스가 자동 생성됩니다.
 - S3 bucket: `axsentinel-local`
 - DynamoDB table: `axsentinel-domain`
 - SQS queue: `axsentinel-events`
+- SQS dead-letter queue: `axsentinel-events-dlq`
 - SNS topic: `axsentinel-alerts`
 - Secrets Manager secret: `axsentinel/local`
 
@@ -559,10 +569,11 @@ Terraform은 다음 AWS 리소스를 구성합니다.
 - 3개 가용 영역의 VPC, public/private subnet과 NAT Gateway
 - Amazon EKS와 Managed Node Group
 - EKS Pod Identity Agent와 서비스별 IAM 역할
-- 백엔드 6개와 웹을 위한 ECR repository
+- 백엔드 7개와 웹을 위한 ECR repository
 - DynamoDB 도메인 테이블과 Point-in-Time Recovery
 - 암호화, 버저닝과 public access 차단이 적용된 문서 S3 bucket
 - SQS 이벤트 큐와 SNS 경보 토픽
+- SQS DLQ와 `maxReceiveCount=3` redrive 정책
 - Cognito User Pool, Web Client, Managed Login Domain과 역할 그룹
 - Bedrock Knowledge Base, S3 data source, S3 Vectors bucket/index
 
@@ -658,7 +669,8 @@ AXSentinel/
 │  ├─ ai_analysis/
 │  ├─ knowledge/
 │  ├─ work_order/
-│  └─ metrics/
+│  ├─ metrics/
+│  └─ event_worker/
 ├─ shared/
 │  ├─ api.py
 │  ├─ auth.py

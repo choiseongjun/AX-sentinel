@@ -18,6 +18,10 @@ output "events_queue_url" {
   value = aws_sqs_queue.events.url
 }
 
+output "events_dlq_url" {
+  value = aws_sqs_queue.events_dlq.url
+}
+
 output "cognito_user_pool_id" {
   value = aws_cognito_user_pool.main.id
 }

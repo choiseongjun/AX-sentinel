@@ -319,7 +319,7 @@ function App() {
         </nav>
         <div className="system-card">
           <div><span className="status-dot" /> 시스템 정상</div>
-          <small>6개 서비스 연결됨</small>
+          <small>7개 서비스 연결됨</small>
         </div>
         <button className="user-card" onClick={() => isCognitoEnabled() ? signOut() : setRole(null)}>
           <span className="avatar">{role === "field_worker" ? "현" : role === "system_admin" ? "시" : "운"}</span>

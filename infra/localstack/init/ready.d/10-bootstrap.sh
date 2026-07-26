@@ -4,6 +4,7 @@ set -eu
 region="${AWS_DEFAULT_REGION:-ap-northeast-2}"
 bucket="${S3_BUCKET:-axsentinel-local}"
 queue="${SQS_QUEUE:-axsentinel-events}"
+dlq="${SQS_DLQ:-axsentinel-events-dlq}"
 topic="${SNS_TOPIC:-axsentinel-alerts}"
 table="${DYNAMODB_TABLE:-axsentinel-domain}"
 secret="${SECRET_NAME:-axsentinel/local}"
@@ -20,7 +21,28 @@ if ! awslocal s3api head-bucket --bucket "${bucket}" >/dev/null 2>&1; then
   fi
 fi
 
-awslocal sqs create-queue --queue-name "${queue}" >/dev/null
+awslocal sqs create-queue --queue-name "${dlq}" >/dev/null
+dlq_arn="$(
+  awslocal sqs get-queue-attributes \
+    --queue-url "$(awslocal sqs get-queue-url --queue-name "${dlq}" --query QueueUrl --output text)" \
+    --attribute-names QueueArn \
+    --query 'Attributes.QueueArn' \
+    --output text
+)"
+queue_url="$(
+  awslocal sqs create-queue \
+    --queue-name "${queue}" \
+    --query QueueUrl \
+    --output text
+)"
+queue_attributes="$(
+  printf \
+    '{"VisibilityTimeout":"60","RedrivePolicy":"{\\"deadLetterTargetArn\\":\\"%s\\",\\"maxReceiveCount\\":\\"3\\"}"}' \
+    "${dlq_arn}"
+)"
+awslocal sqs set-queue-attributes \
+  --queue-url "${queue_url}" \
+  --attributes "${queue_attributes}" >/dev/null
 awslocal sns create-topic --name "${topic}" >/dev/null
 
 if ! awslocal dynamodb describe-table --table-name "${table}" >/dev/null 2>&1; then

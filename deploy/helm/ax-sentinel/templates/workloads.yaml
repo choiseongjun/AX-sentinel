@@ -52,6 +52,10 @@ spec:
               value: {{ $.Values.global.authMode | quote }}
             - name: EVENTS_QUEUE
               value: {{ $.Values.global.eventsQueue | quote }}
+            - name: EVENTS_DLQ
+              value: {{ $.Values.global.eventsDlq | quote }}
+            - name: EVENT_WAIT_TIME_SECONDS
+              value: {{ $.Values.global.eventWaitTimeSeconds | quote }}
             - name: ALERTS_TOPIC
               value: {{ $.Values.global.alertsTopic | quote }}
             - name: WEBSOCKET_BROKER
