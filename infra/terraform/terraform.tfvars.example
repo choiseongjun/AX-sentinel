@@ -1,0 +1,9 @@
+project_name       = "ax-sentinel"
+environment        = "dev"
+aws_region         = "ap-northeast-2"
+kubernetes_version = "1.34"
+
+node_instance_types = ["m7i.large"]
+node_min_size       = 2
+node_desired_size   = 2
+node_max_size       = 6

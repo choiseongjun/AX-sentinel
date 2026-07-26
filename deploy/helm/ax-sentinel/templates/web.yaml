@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.web.name }}
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ .Values.web.name }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Values.web.name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Values.web.name }}
+        app.kubernetes.io/part-of: ax-sentinel
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: {{ include "ax-sentinel.image" (dict "root" . "service" .Values.web) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.web.port }}
+          env:
+            - name: AUTH_MODE
+              value: {{ .Values.global.authMode | quote }}
+            - name: COGNITO_ISSUER
+              value: {{ printf "https://cognito-idp.%s.amazonaws.com/%s" .Values.global.awsRegion (required "global.cognitoUserPoolId is required when deploying with Cognito" .Values.global.cognitoUserPoolId) | quote }}
+            - name: COGNITO_CLIENT_ID
+              value: {{ required "global.cognitoClientId is required when deploying with Cognito" .Values.global.cognitoClientId | quote }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.web.name }}
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ .Values.web.name }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ .Values.web.name }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+{{- if .Values.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Values.web.name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Values.web.name }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

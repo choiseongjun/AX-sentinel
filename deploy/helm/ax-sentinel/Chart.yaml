@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ax-sentinel
+description: AX Sentinel microservices for Kubernetes and Amazon EKS
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

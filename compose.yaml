@@ -1,0 +1,155 @@
+name: axsentinel
+
+x-app-environment: &app-environment
+  ENVIRONMENT: local
+  AUTH_MODE: disabled
+  AI_PROVIDER: mock
+  RAG_PROVIDER: local
+  AWS_REGION: ${AWS_REGION:-ap-northeast-2}
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_ENDPOINT_URL: http://localstack:4566
+  DYNAMODB_TABLE: ${DYNAMODB_TABLE:-axsentinel-domain}
+  DOCUMENTS_BUCKET: ${S3_BUCKET:-axsentinel-local}
+  EVENTS_QUEUE: ${SQS_QUEUE:-axsentinel-events}
+  ALERTS_TOPIC: ${SNS_TOPIC:-axsentinel-alerts}
+
+x-app-base: &app-base
+  restart: unless-stopped
+  depends_on:
+    localstack:
+      condition: service_healthy
+  environment: *app-environment
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/ready')"]
+    interval: 10s
+    timeout: 3s
+    retries: 5
+    start_period: 5s
+
+services:
+  localstack:
+    image: localstack/localstack:${LOCALSTACK_VERSION:-4.14.0}
+    container_name: axsentinel-localstack
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${LOCALSTACK_PORT:-4566}:4566"
+    environment:
+      AWS_DEFAULT_REGION: ${AWS_REGION:-ap-northeast-2}
+      DEBUG: ${LOCALSTACK_DEBUG:-0}
+      EAGER_SERVICE_LOADING: "1"
+      PERSISTENCE: "1"
+      SERVICES: s3,sqs,sns,dynamodb,secretsmanager
+      S3_BUCKET: ${S3_BUCKET:-axsentinel-local}
+      SQS_QUEUE: ${SQS_QUEUE:-axsentinel-events}
+      SNS_TOPIC: ${SNS_TOPIC:-axsentinel-alerts}
+      DYNAMODB_TABLE: ${DYNAMODB_TABLE:-axsentinel-domain}
+      SECRET_NAME: ${SECRET_NAME:-axsentinel/local}
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - ./infra/localstack/init/ready.d:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS http://localhost:4566/_localstack/health >/dev/null &&
+          awslocal s3api head-bucket --bucket "$${S3_BUCKET}" >/dev/null &&
+          awslocal secretsmanager describe-secret --secret-id "$${SECRET_NAME}" >/dev/null
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  asset-service:
+    <<: *app-base
+    image: axsentinel/asset-service:local
+    build:
+      context: .
+      args:
+        SERVICE: asset
+    ports:
+      - "127.0.0.1:8101:8080"
+
+  incident-service:
+    <<: *app-base
+    image: axsentinel/incident-service:local
+    build:
+      context: .
+      args:
+        SERVICE: incident
+    ports:
+      - "127.0.0.1:8102:8080"
+
+  ai-analysis-service:
+    <<: *app-base
+    image: axsentinel/ai-analysis-service:local
+    build:
+      context: .
+      args:
+        SERVICE: ai_analysis
+    ports:
+      - "127.0.0.1:8103:8080"
+
+  knowledge-service:
+    <<: *app-base
+    image: axsentinel/knowledge-service:local
+    build:
+      context: .
+      args:
+        SERVICE: knowledge
+    ports:
+      - "127.0.0.1:8104:8080"
+
+  work-order-service:
+    <<: *app-base
+    image: axsentinel/work-order-service:local
+    build:
+      context: .
+      args:
+        SERVICE: work_order
+    ports:
+      - "127.0.0.1:8105:8080"
+
+  metrics-service:
+    <<: *app-base
+    image: axsentinel/metrics-service:local
+    build:
+      context: .
+      args:
+        SERVICE: metrics
+    ports:
+      - "127.0.0.1:8106:8080"
+
+  web:
+    image: axsentinel/web:local
+    build:
+      context: ./web
+    restart: unless-stopped
+    environment:
+      AUTH_MODE: disabled
+      COGNITO_ISSUER: ""
+      COGNITO_CLIENT_ID: ""
+    depends_on:
+      asset-service:
+        condition: service_healthy
+      incident-service:
+        condition: service_healthy
+      ai-analysis-service:
+        condition: service_healthy
+      knowledge-service:
+        condition: service_healthy
+      work-order-service:
+        condition: service_healthy
+      metrics-service:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  localstack-data:
+    name: axsentinel-localstack-data

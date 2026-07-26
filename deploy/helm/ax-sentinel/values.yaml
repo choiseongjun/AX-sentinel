@@ -1,0 +1,74 @@
+global:
+  imageRegistry: ""
+  imageTag: latest
+  imagePullPolicy: IfNotPresent
+  environment: dev
+  awsRegion: ap-northeast-2
+  awsEndpointUrl: ""
+  authMode: cognito
+  cognitoUserPoolId: ""
+  cognitoClientId: ""
+  aiProvider: bedrock
+  bedrockModelId: ""
+  bedrockGuardrailId: ""
+  bedrockGuardrailVersion: ""
+  ragProvider: bedrock
+  bedrockKnowledgeBaseId: ""
+  bedrockDataSourceId: ""
+
+services:
+  - name: asset-service
+    image: axsentinel/asset-service
+    port: 8080
+    replicas: 2
+    path: /api/v1/equipment
+  - name: incident-service
+    image: axsentinel/incident-service
+    port: 8080
+    replicas: 2
+    path: /api/v1/incidents
+  - name: ai-analysis-service
+    image: axsentinel/ai-analysis-service
+    port: 8080
+    replicas: 2
+    path: /api/v1/analyses
+  - name: knowledge-service
+    image: axsentinel/knowledge-service
+    port: 8080
+    replicas: 2
+    path: /api/v1/documents
+  - name: work-order-service
+    image: axsentinel/work-order-service
+    port: 8080
+    replicas: 2
+    path: /api/v1/approvals
+  - name: metrics-service
+    image: axsentinel/metrics-service
+    port: 8080
+    replicas: 2
+    path: /api/v1/metrics
+
+web:
+  name: web
+  image: axsentinel/web
+  port: 80
+  replicas: 2
+
+ingress:
+  enabled: false
+  className: alb
+  host: api.dev.axsentinel.internal
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

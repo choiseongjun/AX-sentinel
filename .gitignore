@@ -1,0 +1,26 @@
+.env
+.venv/
+.idea/
+.vscode/
+*.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+node_modules/
+dist/
+*.egg-info/
+*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
+
+# LocalStack state is stored in a named Docker volume.
+.localstack/
+
+# Terraform local state and provider cache.
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log

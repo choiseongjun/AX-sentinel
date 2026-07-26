@@ -1,0 +1,128 @@
+{{- range .Values.services }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "ax-sentinel.labels" $ | nindent 4 }}
+    app.kubernetes.io/name: {{ .name }}
+automountServiceAccountToken: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "ax-sentinel.labels" $ | nindent 4 }}
+    app.kubernetes.io/name: {{ .name }}
+spec:
+  replicas: {{ .replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .name }}
+        app.kubernetes.io/part-of: ax-sentinel
+    spec:
+      serviceAccountName: {{ .name }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .name }}
+          image: {{ include "ax-sentinel.image" (dict "root" $ "service" .) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .port }}
+          env:
+            - name: ENVIRONMENT
+              value: {{ $.Values.global.environment | quote }}
+            - name: AWS_REGION
+              value: {{ $.Values.global.awsRegion | quote }}
+            - name: AUTH_MODE
+              value: {{ $.Values.global.authMode | quote }}
+            - name: COGNITO_USER_POOL_ID
+              value: {{ required "global.cognitoUserPoolId is required when deploying with Cognito" $.Values.global.cognitoUserPoolId | quote }}
+            - name: COGNITO_CLIENT_ID
+              value: {{ required "global.cognitoClientId is required when deploying with Cognito" $.Values.global.cognitoClientId | quote }}
+            - name: AI_PROVIDER
+              value: {{ $.Values.global.aiProvider | quote }}
+            - name: BEDROCK_MODEL_ID
+              value: {{ required "global.bedrockModelId is required when deploying with Bedrock" $.Values.global.bedrockModelId | quote }}
+            - name: RAG_PROVIDER
+              value: {{ $.Values.global.ragProvider | quote }}
+            - name: BEDROCK_KNOWLEDGE_BASE_ID
+              value: {{ required "global.bedrockKnowledgeBaseId is required for Bedrock RAG" $.Values.global.bedrockKnowledgeBaseId | quote }}
+            - name: BEDROCK_DATA_SOURCE_ID
+              value: {{ required "global.bedrockDataSourceId is required for Bedrock RAG" $.Values.global.bedrockDataSourceId | quote }}
+            {{- if $.Values.global.bedrockGuardrailId }}
+            - name: BEDROCK_GUARDRAIL_ID
+              value: {{ $.Values.global.bedrockGuardrailId | quote }}
+            - name: BEDROCK_GUARDRAIL_VERSION
+              value: {{ required "global.bedrockGuardrailVersion is required with a guardrail ID" $.Values.global.bedrockGuardrailVersion | quote }}
+            {{- end }}
+            {{- if $.Values.global.awsEndpointUrl }}
+            - name: AWS_ENDPOINT_URL
+              value: {{ $.Values.global.awsEndpointUrl | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "ax-sentinel.labels" $ | nindent 4 }}
+    app.kubernetes.io/name: {{ .name }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ .name }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+{{- if $.Values.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .name }}
+  minReplicas: {{ $.Values.autoscaling.minReplicas }}
+  maxReplicas: {{ $.Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $.Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}
