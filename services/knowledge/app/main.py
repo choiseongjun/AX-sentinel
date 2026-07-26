@@ -1,3 +1,5 @@
+import hashlib
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Annotated
@@ -28,6 +30,8 @@ class Document(BaseModel):
     document_type: DocumentType
     indexing_status: str
     s3_key: str
+    version: str
+    uploaded_at: datetime
 
 
 @app.post(
@@ -57,6 +61,8 @@ async def upload_document(
         document_type=document_type,
         indexing_status="queued",
         s3_key=s3_key,
+        version=f"sha256:{hashlib.sha256(content).hexdigest()}",
+        uploaded_at=datetime.now(UTC),
     )
     await run_in_threadpool(
         get_document_store().put,

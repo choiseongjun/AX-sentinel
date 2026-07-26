@@ -1,0 +1,26 @@
+{
+  "cases": [
+    {
+      "id": "bearing-overheat-001",
+      "name": "프레스 베어링 과열",
+      "equipment_id": "PRESS-001",
+      "sensor_summary": "bearing_temperature: 112.4 / threshold 90",
+      "log_summary": "E-BRG-017: Drive bearing temperature rose rapidly",
+      "expected_causes": ["구동부 베어링 마모 또는 윤활 불량"],
+      "expected_document_ids": ["bearing-maintenance.md"],
+      "baseline_resolution_minutes": 180,
+      "actual_resolution_minutes": 95
+    },
+    {
+      "id": "bearing-vibration-002",
+      "name": "베어링 진동 상승",
+      "equipment_id": "MOTOR-002",
+      "sensor_summary": "vibration_rms: 12.8 / threshold 10",
+      "log_summary": "AUTO-WARNING-STREAK: bearing vibration threshold repeated",
+      "expected_causes": ["구동부 베어링 마모 또는 윤활 불량"],
+      "expected_document_ids": ["bearing-maintenance.md"],
+      "baseline_resolution_minutes": 150,
+      "actual_resolution_minutes": 90
+    }
+  ]
+}

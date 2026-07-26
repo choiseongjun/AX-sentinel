@@ -13,6 +13,7 @@ class RetrievedChunk(BaseModel):
     score: float = Field(ge=0, le=1)
     location: str
     document_id: str
+    document_version: str | None = None
 
 
 class Retriever(Protocol):
@@ -38,6 +39,7 @@ class LocalRetriever:
                 score=min(1.0, matches / max(len(terms), 1)),
                 location=f"s3://local/{document['s3_key']}",
                 document_id=document["id"],
+                document_version=document.get("version"),
             )
             for matches, document in ranked[:limit]
         ]
@@ -69,6 +71,7 @@ class BedrockKnowledgeBaseRetriever:
                     score=result.get("score", 0),
                     location=s3_uri,
                     document_id=s3_uri.rsplit("/", 1)[-1],
+                    document_version=result.get("metadata", {}).get("documentVersion"),
                 )
             )
         return chunks

@@ -38,6 +38,11 @@ resource "aws_cognito_user_pool_client" "web" {
   callback_urls                        = var.web_callback_urls
   logout_urls                          = var.web_logout_urls
   supported_identity_providers         = ["COGNITO"]
+  explicit_auth_flows                 = [
+    "ALLOW_ADMIN_USER_PASSWORD_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH",
+    "ALLOW_USER_SRP_AUTH",
+  ]
 
   access_token_validity  = 60
   id_token_validity      = 60

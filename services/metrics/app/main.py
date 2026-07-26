@@ -39,21 +39,46 @@ async def record_feedback(
 
 @app.get("/api/v1/metrics/summary", tags=["ai-operations"])
 async def metrics_summary() -> dict[str, float | int]:
-    feedback_items = await run_in_threadpool(get_repository().list, "feedback")
-    if not feedback_items:
-        return {
-            "analysis_count": 0,
-            "expert_review_rate": 0.0,
-            "cause_accuracy_average": 0.0,
-            "action_usefulness_average": 0.0,
-        }
-
-    count = len(feedback_items)
+    repository = get_repository()
+    feedback_items = await run_in_threadpool(repository.list, "feedback")
+    analyses = await run_in_threadpool(repository.list, "analysis")
+    approvals = await run_in_threadpool(repository.list, "approval")
+    evaluation_runs = await run_in_threadpool(repository.list, "evaluation_run")
+    feedback_count = len(feedback_items)
+    approved_count = sum(
+        item.get("decision") in {"approve", "approve_with_changes"}
+        for item in approvals
+    )
+    latest_evaluation = max(
+        evaluation_runs,
+        key=lambda item: str(item.get("created_at", "")),
+        default={},
+    )
     return {
-        "analysis_count": count,
-        "expert_review_rate": 0.0,
-        "cause_accuracy_average": sum(item["cause_accuracy"] for item in feedback_items) / count,
-        "action_usefulness_average": (
-            sum(item["action_usefulness"] for item in feedback_items) / count
+        "analysis_count": len(analyses),
+        "expert_review_rate": (
+            sum(bool(item.get("expert_review_required")) for item in analyses)
+            / len(analyses)
+            if analyses
+            else 0.0
         ),
+        "cause_accuracy_average": (
+            sum(item["cause_accuracy"] for item in feedback_items) / feedback_count
+            if feedback_items
+            else 0.0
+        ),
+        "action_usefulness_average": (
+            sum(item["action_usefulness"] for item in feedback_items) / feedback_count
+            if feedback_items
+            else 0.0
+        ),
+        "approval_rate": approved_count / len(approvals) if approvals else 0.0,
+        "cause_candidate_accuracy": latest_evaluation.get(
+            "cause_candidate_accuracy", 0.0
+        ),
+        "document_hit_rate": latest_evaluation.get("document_hit_rate", 0.0),
+        "resolution_time_reduction": latest_evaluation.get(
+            "resolution_time_reduction", 0.0
+        ),
+        "evaluation_case_count": latest_evaluation.get("case_count", 0),
     }

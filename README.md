@@ -333,6 +333,35 @@ Copy-Item .env.example .env
 `COGNITO_CLIENT_ID`로 `/ax-config.js`를 생성합니다. Cognito 클라이언트는
 Authorization Code + PKCE를 사용하며 client secret을 웹에 포함하지 않습니다.
 
+### 실제 AWS Cognito·Bedrock 통합 점검
+
+LocalStack에서는 Cognito와 Bedrock을 mock으로 실행합니다. 개발용 AWS 계정의
+유효한 자격 증명과 Terraform 출력값을 환경 변수로 지정하면 읽기 전용 구성
+검사, OIDC discovery/JWKS, 선택적 로그인, Bedrock 호출과 Knowledge Base
+검색까지 한 번에 검증할 수 있습니다. `AWS_ENDPOINT_URL`이 남아 있으면 실제
+AWS 점검이 아니므로 스크립트가 즉시 중단합니다.
+
+```powershell
+Remove-Item Env:AWS_ENDPOINT_URL -ErrorAction SilentlyContinue
+$env:COGNITO_USER_POOL_ID = "<user-pool-id>"
+$env:COGNITO_CLIENT_ID = "<client-id>"
+$env:BEDROCK_MODEL_ID = "<model-or-inference-profile-id>"
+$env:BEDROCK_KNOWLEDGE_BASE_ID = "<knowledge-base-id>"
+$env:BEDROCK_DATA_SOURCE_ID = "<data-source-id>"
+
+# STS, Cognito, OIDC, Knowledge Base 구성 검사
+.\.venv\Scripts\python.exe scripts/aws-integration-check.py
+
+# 실제 Bedrock 모델 호출과 Knowledge Base 검색 포함(호출 비용 발생)
+.\.venv\Scripts\python.exe scripts/aws-integration-check.py --invoke
+```
+
+테스트 사용자 로그인을 포함하려면 `COGNITO_TEST_USERNAME`과
+`COGNITO_TEST_PASSWORD`를 현재 셸에만 추가합니다. 스크립트는 암호와 토큰을
+출력하거나 파일에 저장하지 않습니다. 실행에는 최소한 STS, Cognito 조회,
+Bedrock/Knowledge Base 조회 권한이 필요하며 `--invoke`에는 모델 호출과
+Retrieve 권한이 추가로 필요합니다.
+
 ## 주요 API
 
 ### 공통
@@ -367,6 +396,12 @@ Authorization Code + PKCE를 사용하며 client secret을 웹에 포함하지 �
 | `WS` | `/api/v1/incidents/ws` | 인증 사용자 | 자동 장애 실시간 알림 |
 | `POST` | `/api/v1/analyses` | 운영 관리자, 시스템 관리자 | RAG 검색 및 AI 분석 |
 | `GET` | `/api/v1/analyses/{id}` | 인증 사용자 | 분석 결과 |
+| `GET` | `/api/v1/expert-reviews` | 인증 사용자 | 전문가 검토 큐와 처리 이력 |
+| `PATCH` | `/api/v1/expert-reviews/{id}` | 운영 관리자, 시스템 관리자 | 담당자 배정·완료·제외 |
+| `POST` | `/api/v1/evaluations/dataset` | 운영 관리자, 시스템 관리자 | 정답 데이터셋 등록 |
+| `GET` | `/api/v1/evaluations/dataset` | 인증 사용자 | 정답 데이터셋 조회 |
+| `POST` | `/api/v1/evaluations/run` | 운영 관리자, 시스템 관리자 | 자동 평가 실행 |
+| `GET` | `/api/v1/evaluations/runs` | 인증 사용자 | 평가 실행 이력 |
 
 ### 문서, 승인과 현장 작업
 
@@ -463,6 +498,9 @@ AI 분석은 센서 요약, 오류 로그, 사용자가 지정한 문서와 RAG 
 - 정지 작업 및 위험 작업 여부
 - 관리자 승인 필요 여부
 - 전문가 검토 필요 여부와 사유
+- AI 제공자와 모델 ID, 프롬프트 버전·해시
+- RAG 제공자와 검색 문서별 버전
+- Guardrail ID·버전·판정, Bedrock 요청 ID와 토큰 사용량
 
 강제되는 안전 규칙:
 
@@ -473,6 +511,34 @@ AI 분석은 센서 요약, 오류 로그, 사용자가 지정한 문서와 RAG 
 5. 반려된 조치안으로는 작업 티켓을 생성할 수 없습니다.
 6. 작업 완료에는 전체 체크리스트, 최소 한 개의 사진 키, 현장 메모,
    실제 원인과 정상 복구 확인이 필요합니다.
+
+검토가 필요한 분석은 `expert_review` 엔터티로 자동 저장됩니다. 전문가
+검토함 화면에서 담당자를 배정하고 판단 근거를 기록하며, `completed`로
+종료할 때는 검토 메모가 필수입니다.
+
+## AI 정답 데이터셋과 자동 평가
+
+샘플 데이터셋은
+[`samples/evaluation/ground-truth.json`](samples/evaluation/ground-truth.json)에
+있습니다. 각 사례는 센서·로그 입력, 기대 원인, 기대 검색 문서 ID 또는 파일명,
+기존 기준
+해결 시간과 실제 해결 시간을 포함합니다.
+
+```powershell
+$dataset = Get-Content samples/evaluation/ground-truth.json -Raw
+Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8081/api/v1/evaluations/dataset `
+  -ContentType "application/json; charset=utf-8" `
+  -Body $dataset
+
+Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8081/api/v1/evaluations/run
+```
+
+평가 실행은 원인 후보 정확도, 기대 문서 Top-K 검색 적중률, 기준 대비 해결
+시간 감소율을 계산합니다. 조치안 승인율은 실제 승인 이력에서, 원인 분석
+정확도와 조치안 유용성은 작업자 피드백에서 집계됩니다. 각 평가 실행에는
+사용한 AI 제공자, 모델 ID와 프롬프트 버전이 함께 저장됩니다.
 
 ## 인증과 권한
 
@@ -500,7 +566,8 @@ AI 분석은 센서 요약, 오류 로그, 사용자가 지정한 문서와 RAG 
 | `data` | 버전 가능한 도메인 JSON |
 
 현재 엔터티 종류는 `equipment`, `telemetry`, `incident`, `analysis`,
-`document`, `approval`, `work_order`, `feedback`입니다.
+`expert_review`, `evaluation_case`, `evaluation_run`, `document`, `approval`,
+`work_order`, `feedback`입니다.
 
 문서 원본은 S3에 서버 측 암호화로 저장하고, 로컬 검색용 텍스트와 문서
 메타데이터는 DynamoDB에 저장합니다.
@@ -531,6 +598,8 @@ python -m venv .venv
 
 - Cognito JWT claim 및 역할 변환
 - AI 전문가 검토와 관리자 승인 정책
+- 분석 감사 메타데이터와 전문가 검토 큐 생성
+- 전문가 검토 완료 메모 강제와 정답 원인 매칭
 - mock 및 Bedrock 분석 결과 구조
 - 로컬 문서 RAG 검색
 
