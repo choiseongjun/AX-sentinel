@@ -245,6 +245,23 @@ Docker Compose 웹(`http://localhost:3000`)과 포트를 분리했으므로 두 
 `ap-northeast-2`를 유지합니다. LocalStack ECR 주소만 로컬 TLS 인증서와
 호환되는 `us-east-1` registry hostname을 사용합니다.
 
+### 실시간 센서 데이터 지속 발생
+
+EKS의 Incident API로 센서 데이터와 로그를 1초 간격으로 계속 전송합니다.
+실행 중인 터미널에서 `Ctrl+C`를 누르면 발생기가 종료됩니다.
+
+```powershell
+.\scripts\telemetry-producer.ps1
+```
+
+다른 주소나 전송 주기를 사용할 수도 있습니다.
+
+```powershell
+.\scripts\telemetry-producer.ps1 `
+  -Endpoint "http://localhost:8081/api/v1/telemetry" `
+  -IntervalMilliseconds 1000
+```
+
 ## 로컬 모드와 AWS 모드
 
 | 기능 | 로컬 Docker Compose | AWS/EKS |
