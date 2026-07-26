@@ -29,10 +29,17 @@ spec:
           env:
             - name: AUTH_MODE
               value: {{ .Values.global.authMode | quote }}
+            {{- if eq .Values.global.authMode "cognito" }}
             - name: COGNITO_ISSUER
               value: {{ printf "https://cognito-idp.%s.amazonaws.com/%s" .Values.global.awsRegion (required "global.cognitoUserPoolId is required when deploying with Cognito" .Values.global.cognitoUserPoolId) | quote }}
             - name: COGNITO_CLIENT_ID
               value: {{ required "global.cognitoClientId is required when deploying with Cognito" .Values.global.cognitoClientId | quote }}
+            {{- else }}
+            - name: COGNITO_ISSUER
+              value: ""
+            - name: COGNITO_CLIENT_ID
+              value: ""
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /
@@ -51,6 +58,7 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+              add: ["CHOWN", "NET_BIND_SERVICE", "SETGID", "SETUID"]
 ---
 apiVersion: v1
 kind: Service

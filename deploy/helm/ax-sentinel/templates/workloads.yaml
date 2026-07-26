@@ -46,20 +46,26 @@ spec:
               value: {{ $.Values.global.awsRegion | quote }}
             - name: AUTH_MODE
               value: {{ $.Values.global.authMode | quote }}
+            {{- if eq $.Values.global.authMode "cognito" }}
             - name: COGNITO_USER_POOL_ID
               value: {{ required "global.cognitoUserPoolId is required when deploying with Cognito" $.Values.global.cognitoUserPoolId | quote }}
             - name: COGNITO_CLIENT_ID
               value: {{ required "global.cognitoClientId is required when deploying with Cognito" $.Values.global.cognitoClientId | quote }}
+            {{- end }}
             - name: AI_PROVIDER
               value: {{ $.Values.global.aiProvider | quote }}
+            {{- if eq $.Values.global.aiProvider "bedrock" }}
             - name: BEDROCK_MODEL_ID
               value: {{ required "global.bedrockModelId is required when deploying with Bedrock" $.Values.global.bedrockModelId | quote }}
+            {{- end }}
             - name: RAG_PROVIDER
               value: {{ $.Values.global.ragProvider | quote }}
+            {{- if eq $.Values.global.ragProvider "bedrock" }}
             - name: BEDROCK_KNOWLEDGE_BASE_ID
               value: {{ required "global.bedrockKnowledgeBaseId is required for Bedrock RAG" $.Values.global.bedrockKnowledgeBaseId | quote }}
             - name: BEDROCK_DATA_SOURCE_ID
               value: {{ required "global.bedrockDataSourceId is required for Bedrock RAG" $.Values.global.bedrockDataSourceId | quote }}
+            {{- end }}
             {{- if $.Values.global.bedrockGuardrailId }}
             - name: BEDROCK_GUARDRAIL_ID
               value: {{ $.Values.global.bedrockGuardrailId | quote }}
@@ -69,6 +75,10 @@ spec:
             {{- if $.Values.global.awsEndpointUrl }}
             - name: AWS_ENDPOINT_URL
               value: {{ $.Values.global.awsEndpointUrl | quote }}
+            - name: AWS_ACCESS_KEY_ID
+              value: {{ required "global.awsAccessKeyId is required with an AWS endpoint override" $.Values.global.awsAccessKeyId | quote }}
+            - name: AWS_SECRET_ACCESS_KEY
+              value: {{ required "global.awsSecretAccessKey is required with an AWS endpoint override" $.Values.global.awsSecretAccessKey | quote }}
             {{- end }}
           readinessProbe:
             httpGet:
@@ -102,7 +112,7 @@ spec:
     app.kubernetes.io/name: {{ .name }}
   ports:
     - name: http
-      port: 80
+      port: {{ .port }}
       targetPort: http
 {{- if $.Values.autoscaling.enabled }}
 ---

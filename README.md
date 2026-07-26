@@ -113,7 +113,7 @@ EC2 Managed Node Group은 Pod가 공유하는 컴퓨팅 기반입니다.
 | RAG | Amazon Bedrock Knowledge Bases, S3 Vectors, Amazon S3 |
 | Data | Amazon DynamoDB single-table, S3, SQS, SNS |
 | Auth | Amazon Cognito, OIDC Authorization Code + PKCE, JWT/JWKS |
-| Local | Docker Compose, LocalStack 4.14.0 |
+| Local | Docker Compose, LocalStack Pro, LocalStack EKS |
 | Platform | Amazon EKS, ECR, VPC, Pod Identity |
 | IaC | Terraform, Helm, Kubernetes |
 | Quality | pytest, Ruff, TypeScript compiler, Vite build |
@@ -205,6 +205,45 @@ http://localhost:3000
 
 주의: `reset`은 LocalStack 볼륨과 그 안의 DynamoDB, S3 데이터를 모두
 삭제합니다.
+
+### LocalStack EKS에 전체 서비스 배포
+
+실제 AWS 계정 대신 LocalStack Pro가 제공하는 EKS 환경에 클러스터와 Managed
+Node Group을 만들고, 6개 FastAPI 서비스와 React 웹을 각각 Kubernetes
+Deployment로 실행할 수 있습니다. LocalStack 인증 토큰은 현재 PowerShell
+세션의 환경 변수로만 전달하며 저장소에 기록하지 않습니다.
+
+```powershell
+$env:LOCALSTACK_AUTH_TOKEN="<your-localstack-auth-token>"
+.\scripts\local-eks.ps1 deploy
+```
+
+배포 스크립트는 다음 작업을 멱등적으로 수행합니다.
+
+1. LocalStack Pro 시작
+2. `ax-sentinel-local` EKS 클러스터와 `ax-sentinel-workers` Node Group 생성
+3. 로컬 컨테이너 이미지 빌드
+4. LocalStack ECR repository 생성 및 이미지 push
+5. Helm release `ax-sentinel` 설치 또는 업데이트
+6. Node, Pod, Service, Ingress 상태 출력
+
+배포 상태는 언제든 다시 확인할 수 있습니다.
+
+```powershell
+.\scripts\local-eks.ps1 status
+kubectl get pods -n ax-sentinel
+```
+
+배포가 끝나면 다음 주소에서 EKS에 올라간 React 화면을 엽니다.
+
+```text
+http://localhost:8081
+```
+
+Docker Compose 웹(`http://localhost:3000`)과 포트를 분리했으므로 두 환경을
+동시에 비교할 수 있습니다. 애플리케이션 데이터 리전은
+`ap-northeast-2`를 유지합니다. LocalStack ECR 주소만 로컬 TLS 인증서와
+호환되는 `us-east-1` registry hostname을 사용합니다.
 
 ## 로컬 모드와 AWS 모드
 

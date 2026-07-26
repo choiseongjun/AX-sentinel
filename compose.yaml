@@ -29,17 +29,21 @@ x-app-base: &app-base
 
 services:
   localstack:
-    image: localstack/localstack:${LOCALSTACK_VERSION:-4.14.0}
+    image: localstack/localstack-pro:${LOCALSTACK_VERSION:-latest}
     container_name: axsentinel-localstack
     restart: unless-stopped
     ports:
       - "127.0.0.1:${LOCALSTACK_PORT:-4566}:4566"
+      - "127.0.0.1:4510-4559:4510-4559"
     environment:
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
       AWS_DEFAULT_REGION: ${AWS_REGION:-ap-northeast-2}
       DEBUG: ${LOCALSTACK_DEBUG:-0}
       EAGER_SERVICE_LOADING: "1"
       PERSISTENCE: "1"
-      SERVICES: s3,sqs,sns,dynamodb,secretsmanager
+      SERVICES: s3,sqs,sns,dynamodb,secretsmanager,ecr,eks,ec2,iam,sts
+      EKS_K8S_PROVIDER: k3s
+      EKS_START_K3D_LB_INGRESS: "1"
       S3_BUCKET: ${S3_BUCKET:-axsentinel-local}
       SQS_QUEUE: ${SQS_QUEUE:-axsentinel-events}
       SNS_TOPIC: ${SNS_TOPIC:-axsentinel-alerts}
@@ -48,6 +52,8 @@ services:
     volumes:
       - localstack-data:/var/lib/localstack
       - ./infra/localstack/init/ready.d:/etc/localstack/init/ready.d:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${USERPROFILE}/.kube:/root/.kube
     healthcheck:
       test:
         - CMD-SHELL
@@ -152,4 +158,4 @@ services:
 
 volumes:
   localstack-data:
-    name: axsentinel-localstack-data
+    name: axsentinel-localstack-pro-data
