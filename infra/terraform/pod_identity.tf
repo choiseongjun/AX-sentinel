@@ -75,7 +75,7 @@ data "aws_iam_policy_document" "service" {
   }
 
   dynamic "statement" {
-    for_each = each.key == "knowledge-service" ? [1] : []
+    for_each = contains(["knowledge-service", "work-order-service"], each.key) ? [1] : []
     content {
       sid       = "WriteKnowledgeDocuments"
       effect    = "Allow"

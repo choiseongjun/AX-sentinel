@@ -17,5 +17,9 @@ spec:
           port: 8080
         - protocol: TCP
           port: 80
+        {{- if .Values.redis.enabled }}
+        - protocol: TCP
+          port: 6379
+        {{- end }}
   egress:
     - {}

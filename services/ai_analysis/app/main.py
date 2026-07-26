@@ -73,6 +73,14 @@ async def analyze_incident(
         retrieval_query,
         5,
     )
+    repository = get_repository()
+    equipment = await run_in_threadpool(repository.get, "equipment", request.equipment_id)
+    maintenance_values = await run_in_threadpool(repository.list, "maintenance")
+    maintenance_history = [
+        value
+        for value in maintenance_values
+        if value.get("equipment_id") == request.equipment_id
+    ]
     related_document_ids = list(
         dict.fromkeys(
             request.related_document_ids
@@ -81,6 +89,8 @@ async def analyze_incident(
     )
     has_documents = bool(related_document_ids)
     evidence = request.model_dump(mode="json") | {
+        "equipment": equipment,
+        "maintenance_history": maintenance_history,
         "related_document_ids": related_document_ids,
         "retrieved_context": [chunk.model_dump(mode="json") for chunk in retrieved_chunks],
     }
@@ -111,7 +121,7 @@ async def analyze_incident(
         manager_approval_required=decision.manager_approval_required,
         review_reasons=list(decision.reasons),
     )
-    await run_in_threadpool(get_repository().put, "analysis", result.id, result)
+    await run_in_threadpool(repository.put, "analysis", result.id, result)
     return result
 
 

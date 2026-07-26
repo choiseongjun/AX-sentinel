@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated
@@ -12,8 +14,10 @@ from shared.api import create_app
 from shared.auth import Principal, Role, get_token_verifier, require_roles
 from shared.config import get_settings
 from shared.dynamodb import get_repository
+from shared.events import get_event_publisher
+from shared.realtime import get_realtime_bus
 
-app = create_app("incident-service")
+from .detection import AnomalyDetector, DetectionSignal
 
 
 class IncidentStatus(StrEnum):
@@ -41,6 +45,8 @@ class Incident(BaseModel):
     severity: str
     detected_at: datetime
     payload: VirtualIncidentRequest
+    source: str = "manual"
+    telemetry_id: str | None = None
 
 
 class IncidentStatusUpdate(BaseModel):
@@ -62,7 +68,7 @@ class TelemetryRecord(TelemetryRequest):
     received_at: datetime
 
 
-class TelemetryConnectionManager:
+class WebSocketConnectionManager:
     def __init__(self) -> None:
         self._connections: set[WebSocket] = set()
 
@@ -73,8 +79,8 @@ class TelemetryConnectionManager:
     def disconnect(self, websocket: WebSocket) -> None:
         self._connections.discard(websocket)
 
-    async def broadcast(self, telemetry: TelemetryRecord) -> None:
-        message = telemetry.model_dump(mode="json")
+    async def broadcast(self, model: BaseModel | dict[str, object]) -> None:
+        message = model.model_dump(mode="json") if isinstance(model, BaseModel) else model
         disconnected: list[WebSocket] = []
         for websocket in tuple(self._connections):
             try:
@@ -85,7 +91,57 @@ class TelemetryConnectionManager:
             self.disconnect(websocket)
 
 
-telemetry_connections = TelemetryConnectionManager()
+telemetry_connections = WebSocketConnectionManager()
+incident_connections = WebSocketConnectionManager()
+anomaly_detector = AnomalyDetector()
+realtime_listener_task: asyncio.Task[None] | None = None
+
+
+async def _publish_realtime(
+    channel: str,
+    manager: WebSocketConnectionManager,
+    model: BaseModel,
+) -> None:
+    if get_settings().websocket_broker == "redis":
+        await get_realtime_bus().publish(channel, model.model_dump(mode="json"))
+    else:
+        await manager.broadcast(model)
+
+
+async def _start_realtime_listener() -> None:
+    global realtime_listener_task
+    if get_settings().websocket_broker != "redis":
+        return
+
+    ready = asyncio.Event()
+    realtime_listener_task = asyncio.create_task(
+        get_realtime_bus().listen(
+            {
+                "ax-sentinel.telemetry": telemetry_connections.broadcast,
+                "ax-sentinel.incidents": incident_connections.broadcast,
+            },
+            ready,
+        )
+    )
+    await asyncio.wait_for(ready.wait(), timeout=10)
+
+
+async def _stop_realtime_listener() -> None:
+    global realtime_listener_task
+    if realtime_listener_task is not None:
+        realtime_listener_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await realtime_listener_task
+        realtime_listener_task = None
+    if get_settings().websocket_broker == "redis":
+        await get_realtime_bus().close()
+
+
+app = create_app(
+    "incident-service",
+    startup=_start_realtime_listener,
+    shutdown=_stop_realtime_listener,
+)
 
 
 def _websocket_access_token(websocket: WebSocket) -> tuple[str | None, str | None]:
@@ -129,6 +185,57 @@ ALLOWED_TRANSITIONS: dict[IncidentStatus, set[IncidentStatus]] = {
 }
 
 
+async def _create_automatic_incident(telemetry: TelemetryRecord) -> Incident | None:
+    trigger_code = anomaly_detector.evaluate(
+        DetectionSignal(
+            equipment_id=telemetry.equipment_id,
+            sensor_type=telemetry.sensor_type,
+            status=telemetry.status,
+        )
+    )
+    if trigger_code is None:
+        return None
+
+    repository = get_repository()
+    existing_values = await run_in_threadpool(repository.list, "incident")
+    existing_incidents = [Incident.model_validate(value) for value in existing_values]
+    duplicate_exists = any(
+        incident.status != IncidentStatus.RESOLVED
+        and incident.equipment_id == telemetry.equipment_id
+        and incident.payload.sensor_type == telemetry.sensor_type
+        for incident in existing_incidents
+    )
+    if duplicate_exists:
+        return None
+
+    incident = Incident(
+        id=str(uuid4()),
+        equipment_id=telemetry.equipment_id,
+        status=IncidentStatus.DETECTED,
+        severity="critical" if telemetry.status == "critical" else "high",
+        detected_at=datetime.now(UTC),
+        payload=VirtualIncidentRequest(
+            equipment_id=telemetry.equipment_id,
+            sensor_type=telemetry.sensor_type,
+            measured_value=telemetry.measured_value,
+            threshold=telemetry.threshold,
+            error_code=trigger_code,
+            log_excerpt=telemetry.log_excerpt,
+        ),
+        source="automatic",
+        telemetry_id=telemetry.id,
+    )
+    await run_in_threadpool(repository.put, "incident", incident.id, incident)
+    await run_in_threadpool(
+        get_event_publisher().publish,
+        "incident.detected",
+        incident.model_dump(mode="json"),
+        alert=True,
+    )
+    await _publish_realtime("ax-sentinel.incidents", incident_connections, incident)
+    return incident
+
+
 @app.post(
     "/api/v1/telemetry",
     response_model=TelemetryRecord,
@@ -155,7 +262,8 @@ async def ingest_telemetry(
         telemetry.id,
         telemetry,
     )
-    await telemetry_connections.broadcast(telemetry)
+    await _publish_realtime("ax-sentinel.telemetry", telemetry_connections, telemetry)
+    await _create_automatic_incident(telemetry)
     return telemetry
 
 
@@ -182,6 +290,20 @@ async def telemetry_websocket(websocket: WebSocket) -> None:
         telemetry_connections.disconnect(websocket)
 
 
+@app.websocket("/api/v1/incidents/ws")
+async def incident_websocket(websocket: WebSocket) -> None:
+    subprotocol = await _authorize_websocket(websocket)
+    if get_settings().auth_mode != "disabled" and subprotocol is None:
+        return
+
+    await incident_connections.connect(websocket, subprotocol)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        incident_connections.disconnect(websocket)
+
+
 @app.post(
     "/api/v1/incidents/simulate",
     response_model=Incident,
@@ -205,6 +327,7 @@ async def simulate_incident(
     )
     repository = get_repository()
     await run_in_threadpool(repository.put, "incident", incident.id, incident)
+    await _publish_realtime("ax-sentinel.incidents", incident_connections, incident)
     return incident
 
 
@@ -247,4 +370,5 @@ async def update_incident_status(
         )
     incident.status = update.status
     await run_in_threadpool(get_repository().put, "incident", incident.id, incident)
+    await _publish_realtime("ax-sentinel.incidents", incident_connections, incident)
     return incident

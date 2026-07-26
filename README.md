@@ -14,12 +14,14 @@ AI는 설비를 직접 조작하지 않습니다. 분석 결과는 운영 관리
 
 - Python 3.12 및 FastAPI 기반 마이크로서비스 6개
 - React 19, TypeScript, Vite 기반 운영 웹 콘솔
-- 센서 데이터 수신, DynamoDB 저장 및 실시간 모니터링
-- 가상 설비 이상 이벤트 생성과 장애 상태 관리
+- 센서 데이터 수신, DynamoDB 저장 및 WebSocket 실시간 모니터링
+- 임계치 초과 자동 감지, 가상 장애 생성과 장애 상태 관리
 - Amazon Bedrock Converse 기반 장애 원인 및 조치안 생성
 - S3 문서 저장과 Bedrock Knowledge Bases 기반 RAG
-- 관리자 승인, 작업 티켓, 현장 체크리스트와 복구 확인
+- SQS 도메인 이벤트, SNS 위험 경보와 Redis Pub/Sub 다중 Pod fan-out
+- 관리자 승인·수정 승인·반려, 작업 티켓, 증빙 사진과 복구 확인
 - AI 분석 정확도 및 조치안 유용성 피드백
+- 서비스별 Prometheus HTTP 메트릭
 - Amazon Cognito OIDC 인증과 역할 기반 권한 제어
 - Docker Compose 및 LocalStack 로컬 개발 환경
 - Terraform 기반 AWS VPC, EKS, ECR, Cognito, DynamoDB, S3와 Bedrock 구성
@@ -87,6 +89,7 @@ flowchart TB
 
     Incident --> SQS["SQS Events"]
     Incident --> SNS["SNS Alerts"]
+    Incident <--> Redis["Redis Pub/Sub"]
 
     subgraph EKS["Amazon EKS"]
         Web
@@ -111,11 +114,12 @@ EC2 Managed Node Group은 Pod가 공유하는 컴퓨팅 기반입니다.
 | Backend | Python 3.12, FastAPI, Pydantic, Uvicorn |
 | AI | Amazon Bedrock Converse API, 선택적 Bedrock Guardrail |
 | RAG | Amazon Bedrock Knowledge Bases, S3 Vectors, Amazon S3 |
-| Data | Amazon DynamoDB single-table, S3, SQS, SNS |
+| Data | Amazon DynamoDB single-table, S3, SQS, SNS, Redis Pub/Sub |
 | Auth | Amazon Cognito, OIDC Authorization Code + PKCE, JWT/JWKS |
 | Local | Docker Compose, LocalStack Pro, LocalStack EKS |
 | Platform | Amazon EKS, ECR, VPC, Pod Identity |
 | IaC | Terraform, Helm, Kubernetes |
+| Observability | Prometheus exposition endpoint, Kubernetes probes |
 | Quality | pytest, Ruff, TypeScript compiler, Vite build |
 
 ## 서비스
@@ -145,7 +149,18 @@ EC2 Managed Node Group은 Pod가 공유하는 컴퓨팅 기반입니다.
 
 `실시간 데이터` 화면은 수신된 센서값, 임계치 상태, 최근 로그와 파형을
 WebSocket으로 즉시 갱신합니다. 화면 진입 시 최근 100건만 HTTP로 불러오고
-그 이후 데이터는 `ws://<host>/api/v1/telemetry/ws`로 수신합니다.
+그 이후 데이터는 `ws://<host>/api/v1/telemetry/ws`로 수신합니다. 자동으로
+감지된 장애는 `ws://<host>/api/v1/incidents/ws`를 통해 대시보드와 장애
+목록에 즉시 반영됩니다. Kubernetes에서는 Redis Pub/Sub이 여러 Incident
+Service Pod 사이의 메시지를 fan-out합니다.
+
+자동 감지 규칙은 다음과 같습니다.
+
+- `critical`: 첫 임계치 초과 샘플에서 즉시 장애 생성
+- `warning`: 동일 설비·센서에서 연속 3회 감지되면 장애 생성
+- 정상 샘플: 해당 연속 감지 횟수 초기화
+- 미해결 상태의 동일 설비·센서 자동 장애: 중복 생성 억제
+
 `데모 스트림 시작` 버튼을 누르면 로컬 테스트 데이터가 약 1.5초 간격으로
 생성됩니다.
 
@@ -272,7 +287,7 @@ EKS의 Incident API로 센서 데이터와 로그를 1초 간격으로 계속 �
 | AI 분석 | 결정론적인 mock 분석기 | Bedrock Converse |
 | RAG | DynamoDB 저장 텍스트 검색 | Bedrock Knowledge Bases |
 | 데이터 | LocalStack DynamoDB/S3 | AWS DynamoDB/S3 |
-| 센서 갱신 | HTTP 수집 + WebSocket push | HTTP 수집 + WebSocket push |
+| 센서 갱신 | HTTP 수집 + WebSocket/Redis push | HTTP 수집 + WebSocket/Redis push |
 | 실행 환경 | Docker Compose | EKS Pod + HPA |
 
 로컬에서 역할을 선택해도 API는 개발용 principal에 모든 역할을 부여합니다.
@@ -304,6 +319,8 @@ Copy-Item .env.example .env
 | `BEDROCK_DATA_SOURCE_ID` | 없음 | Bedrock Data Source ID |
 | `SQS_QUEUE` | `axsentinel-events` | 이벤트 큐 |
 | `SNS_TOPIC` | `axsentinel-alerts` | 경보 토픽 |
+| `WEBSOCKET_BROKER` | `memory` | `memory` 또는 `redis` |
+| `REDIS_URL` | 없음 | Redis Pub/Sub 접속 URL |
 
 웹 컨테이너는 시작할 때 `AUTH_MODE`, `COGNITO_ISSUER`,
 `COGNITO_CLIENT_ID`로 `/ax-config.js`를 생성합니다. Cognito 클라이언트는
@@ -317,6 +334,7 @@ Authorization Code + PKCE를 사용하며 client secret을 웹에 포함하지 �
 | --- | --- | --- |
 | `GET` | `/health/live` | 프로세스 생존 확인 |
 | `GET` | `/health/ready` | 서비스 준비 상태 확인 |
+| `GET` | `/metrics` | Prometheus 형식 HTTP 메트릭 |
 | `GET` | `/docs` | 서비스별 Swagger UI |
 
 ### 설비와 실시간 데이터
@@ -325,8 +343,11 @@ Authorization Code + PKCE를 사용하며 client secret을 웹에 포함하지 �
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/equipment` | 인증 사용자 | 설비 목록 |
 | `GET` | `/api/v1/equipment/{id}` | 인증 사용자 | 설비 상세 |
+| `POST` | `/api/v1/equipment/{id}/maintenance` | 운영 관리자, 시스템 관리자 | 정비 이력 등록 |
+| `GET` | `/api/v1/equipment/{id}/maintenance` | 인증 사용자 | 정비 이력 조회 |
 | `POST` | `/api/v1/telemetry` | 운영 관리자, 시스템 관리자 | 센서값 수신 |
 | `GET` | `/api/v1/telemetry?limit=100` | 인증 사용자 | 최근 센서 데이터 |
+| `WS` | `/api/v1/telemetry/ws` | 인증 사용자 | 실시간 센서 스트림 |
 
 ### 장애와 AI 분석
 
@@ -336,6 +357,7 @@ Authorization Code + PKCE를 사용하며 client secret을 웹에 포함하지 �
 | `GET` | `/api/v1/incidents` | 인증 사용자 | 장애 목록 |
 | `GET` | `/api/v1/incidents/{id}` | 인증 사용자 | 장애 상세 |
 | `PATCH` | `/api/v1/incidents/{id}/status` | 관리자, 작업자 | 장애 상태 전환 |
+| `WS` | `/api/v1/incidents/ws` | 인증 사용자 | 자동 장애 실시간 알림 |
 | `POST` | `/api/v1/analyses` | 운영 관리자, 시스템 관리자 | RAG 검색 및 AI 분석 |
 | `GET` | `/api/v1/analyses/{id}` | 인증 사용자 | 분석 결과 |
 
@@ -349,6 +371,7 @@ Authorization Code + PKCE를 사용하며 client secret을 웹에 포함하지 �
 | `POST` | `/api/v1/approvals` | 운영 관리자, 시스템 관리자 | 승인·수정 승인·반려 |
 | `GET` | `/api/v1/work-orders` | 인증 사용자 | 작업 티켓 목록 |
 | `GET` | `/api/v1/work-orders/{id}` | 인증 사용자 | 작업 티켓 상세 |
+| `POST` | `/api/v1/work-orders/{id}/evidence` | 현장 작업자, 시스템 관리자 | 증빙 이미지 업로드, 최대 10 MiB |
 | `POST` | `/api/v1/work-orders/{id}/complete` | 현장 작업자, 시스템 관리자 | 현장 작업 완료 |
 | `POST` | `/api/v1/feedback` | 관리자, 작업자 | AI 분석 평가 |
 | `GET` | `/api/v1/metrics/summary` | 인증 사용자 | AI 운영 지표 |
@@ -661,19 +684,18 @@ AXSentinel/
 
 ## 현재 프로토타입 제한사항
 
-- WebSocket 브로드캐스트는 현재 Incident Service 프로세스 메모리에 연결을
-  보관합니다. 운영 환경에서 Incident Pod를 여러 개 실행할 때는 Redis
-  Pub/Sub, Amazon MSK 또는 별도 스트림 게이트웨이로 fan-out해야 합니다.
 - LocalStack에서 지원하지 않는 Bedrock/Cognito 기능은 mock 또는 비활성
-  모드로 실행됩니다.
+  모드로 실행됩니다. 실제 AWS에서는 Terraform과 Helm 입력값으로
+  `AI_PROVIDER=bedrock`, `RAG_PROVIDER=bedrock`, `AUTH_MODE=cognito`를
+  활성화합니다.
 - DynamoDB 목록 API는 현재 filtered scan을 사용하므로 운영 트래픽 전
   엔터티별 GSI와 cursor pagination이 필요합니다.
 - 센서 수집 API는 사용자 Cognito 인증을 사용합니다. 실제 설비 게이트웨이는
   IoT Core, mTLS 또는 전용 machine identity 방식으로 분리해야 합니다.
-- 사진 업로드 저장 API는 아직 없으며 작업 완료 API는 업로드된 S3 key를
-  받는 구조입니다.
-- 실제 AWS 배포, ECR push, DNS/TLS, 관측성, 백업 정책과 비용 검토는
-  환경별로 별도 수행해야 합니다.
+- `/metrics`는 각 서비스에서 노출하지만 Prometheus 서버·Grafana 대시보드와
+  경보 규칙은 운영 환경에 별도로 설치해야 합니다.
+- 실제 AWS 배포, DNS/TLS, 백업 정책과 비용 검토는 환경별로 별도
+  수행해야 합니다.
 
 ## 문제 해결
 

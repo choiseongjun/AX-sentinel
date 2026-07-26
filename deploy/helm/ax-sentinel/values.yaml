@@ -7,6 +7,10 @@ global:
   awsEndpointUrl: ""
   awsAccessKeyId: ""
   awsSecretAccessKey: ""
+  eventsQueue: ax-sentinel-dev-events
+  alertsTopic: ax-sentinel-dev-alerts
+  websocketBroker: memory
+  redisUrl: ""
   authMode: cognito
   cognitoUserPoolId: ""
   cognitoClientId: ""
@@ -66,6 +70,10 @@ autoscaling:
   minReplicas: 2
   maxReplicas: 8
   targetCPUUtilizationPercentage: 70
+
+redis:
+  enabled: false
+  image: redis:7-alpine
 
 resources:
   requests:

@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     aws_region: str = "ap-northeast-2"
     aws_endpoint_url: str | None = None
     dynamodb_table: str = "axsentinel-domain"
+    events_queue: str = "axsentinel-events"
+    alerts_topic: str = "axsentinel-alerts"
+    websocket_broker: str = "memory"
+    redis_url: str | None = None
     log_level: str = "INFO"
     auth_mode: str = "disabled"
     cognito_user_pool_id: str | None = None

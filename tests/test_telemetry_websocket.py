@@ -2,7 +2,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
-from services.incident.app.main import TelemetryConnectionManager, TelemetryRecord
+from services.incident.app.main import TelemetryRecord, WebSocketConnectionManager
 
 
 class FakeWebSocket:
@@ -19,7 +19,7 @@ class FakeWebSocket:
 
 def test_telemetry_connection_broadcasts_json_record() -> None:
     async def scenario() -> None:
-        manager = TelemetryConnectionManager()
+        manager = WebSocketConnectionManager()
         socket: Any = FakeWebSocket()
         record = TelemetryRecord(
             id="sample-1",

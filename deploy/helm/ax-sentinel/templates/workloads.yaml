@@ -26,6 +26,10 @@ spec:
       labels:
         app.kubernetes.io/name: {{ .name }}
         app.kubernetes.io/part-of: ax-sentinel
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: {{ .port | quote }}
     spec:
       serviceAccountName: {{ .name }}
       securityContext:
@@ -46,6 +50,16 @@ spec:
               value: {{ $.Values.global.awsRegion | quote }}
             - name: AUTH_MODE
               value: {{ $.Values.global.authMode | quote }}
+            - name: EVENTS_QUEUE
+              value: {{ $.Values.global.eventsQueue | quote }}
+            - name: ALERTS_TOPIC
+              value: {{ $.Values.global.alertsTopic | quote }}
+            - name: WEBSOCKET_BROKER
+              value: {{ $.Values.global.websocketBroker | quote }}
+            {{- if eq $.Values.global.websocketBroker "redis" }}
+            - name: REDIS_URL
+              value: {{ required "global.redisUrl is required for the Redis WebSocket broker" $.Values.global.redisUrl | quote }}
+            {{- end }}
             {{- if eq $.Values.global.authMode "cognito" }}
             - name: COGNITO_USER_POOL_ID
               value: {{ required "global.cognitoUserPoolId is required when deploying with Cognito" $.Values.global.cognitoUserPoolId | quote }}

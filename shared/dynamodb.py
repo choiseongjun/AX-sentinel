@@ -13,7 +13,12 @@ from shared.config import get_settings
 
 def _dynamodb_value(value: Any) -> Any:
     """Convert JSON-compatible values into DynamoDB-compatible values."""
-    return json.loads(json.dumps(value), parse_float=Decimal)
+    def json_default(item: Any) -> int | float:
+        if isinstance(item, Decimal):
+            return int(item) if item == item.to_integral_value() else float(item)
+        raise TypeError(f"Object of type {type(item).__name__} is not JSON serializable")
+
+    return json.loads(json.dumps(value, default=json_default), parse_float=Decimal)
 
 
 class DynamoRepository:

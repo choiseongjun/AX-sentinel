@@ -48,6 +48,8 @@ type Incident = {
   status: string;
   severity: string;
   detected_at: string;
+  source?: string;
+  telemetry_id?: string | null;
   payload: {
     sensor_type: string;
     measured_value: number;
@@ -56,6 +58,13 @@ type Incident = {
     log_excerpt: string;
   };
 };
+
+function mergeIncidents(current: Incident[], incoming: Incident[]) {
+  const incidentsById = new Map(current.map((incident) => [incident.id, incident]));
+  incoming.forEach((incident) => incidentsById.set(incident.id, incident));
+  return [...incidentsById.values()]
+    .sort((left, right) => Date.parse(right.detected_at) - Date.parse(left.detected_at));
+}
 
 type Equipment = {
   id: string;
@@ -227,7 +236,7 @@ function App() {
       api<WorkOrder[]>("/api/v1/work-orders"),
       api<Metrics>("/api/v1/metrics/summary"),
     ]);
-    setIncidents(incidentData);
+    setIncidents((current) => mergeIncidents(current, incidentData));
     setEquipment(equipmentData);
     setWorkOrders(orderData);
     setMetrics(metricData);
@@ -236,6 +245,45 @@ function App() {
   useEffect(() => {
     if (role) refresh().catch((error) => setNotice(error.message));
   }, [role, refresh]);
+
+  useEffect(() => {
+    if (!role) return;
+
+    let disposed = false;
+    let socket: WebSocket | undefined;
+    let reconnectTimer: number | undefined;
+
+    const connect = async () => {
+      const token = await getAccessToken();
+      if (disposed) return;
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const url = `${protocol}//${window.location.host}/api/v1/incidents/ws`;
+      socket = token
+        ? new WebSocket(url, ["access-token", token])
+        : new WebSocket(url);
+      socket.onmessage = (event) => {
+        const incident = JSON.parse(event.data) as Incident;
+        setIncidents((current) => mergeIncidents(current, [incident]));
+        if (incident.status === "detected") {
+          setNotice(`${incident.equipment_id} 자동 장애가 감지되었습니다.`);
+        }
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        if (!disposed) reconnectTimer = window.setTimeout(connect, 1500);
+      };
+    };
+
+    connect().catch((error) => setNotice(`장애 스트림 연결 실패: ${String(error)}`));
+    return () => {
+      disposed = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (socket) {
+        socket.onclose = null;
+        socket.close();
+      }
+    };
+  }, [role]);
 
   const openIncident = (incident: Incident) => {
     setSelectedIncident(incident);
@@ -303,13 +351,14 @@ function App() {
               incident={selectedIncident}
               analysis={analysis}
               setAnalysis={setAnalysis}
+              role={role}
               refresh={refresh}
               setNotice={setNotice}
             />
           )}
           {page === "analysis" && !selectedIncident && <EmptyState title="분석할 장애를 선택하세요" onClick={() => setPage("incidents")} />}
           {page === "work-orders" && <WorkOrdersPage workOrders={workOrders} role={role} refresh={refresh} setNotice={setNotice} />}
-          {page === "documents" && <DocumentsPage setNotice={setNotice} />}
+          {page === "documents" && <DocumentsPage role={role} setNotice={setNotice} />}
           {page === "metrics" && <MetricsPage metrics={metrics} />}
         </div>
       </main>
@@ -542,7 +591,8 @@ function sensorLabel(value: string) {
 function Dashboard({ incidents, equipment, metrics, onIncident }: {
   incidents: Incident[]; equipment: Equipment[]; metrics: Metrics; onIncident: (incident: Incident) => void;
 }) {
-  const critical = incidents.filter((item) => item.severity === "critical").length;
+  const activeIncidents = incidents.filter((item) => item.status !== "resolved");
+  const critical = activeIncidents.filter((item) => item.severity === "critical").length;
   return (
     <>
       <div className="hero-strip">
@@ -551,7 +601,7 @@ function Dashboard({ incidents, equipment, metrics, onIncident }: {
       </div>
       <section className="kpi-grid">
         <Kpi icon={Factory} label="연결 설비" value={equipment.length} unit="대" trend="정상 연결" tone="blue" />
-        <Kpi icon={AlertTriangle} label="활성 장애" value={incidents.length} unit="건" trend={`${critical}건 긴급`} tone="red" />
+        <Kpi icon={AlertTriangle} label="활성 장애" value={activeIncidents.length} unit="건" trend={`${critical}건 긴급`} tone="red" />
         <Kpi icon={Bot} label="AI 분석" value={metrics.analysis_count} unit="건" trend="누적 평가" tone="violet" />
         <Kpi icon={CheckCircle2} label="원인 정확도" value={metrics.cause_accuracy_average || 0} unit="/ 5" trend="현장 피드백" tone="green" />
       </section>
@@ -608,11 +658,12 @@ function IncidentsPage({ incidents, refresh, onIncident, setNotice }: {
   );
 }
 
-function AnalysisPage({ incident, analysis, setAnalysis, refresh, setNotice }: {
+function AnalysisPage({ incident, analysis, setAnalysis, role, refresh, setNotice }: {
   incident: Incident; analysis: Analysis | null; setAnalysis: (value: Analysis) => void;
-  refresh: () => Promise<void>; setNotice: (value: string) => void;
+  role: string; refresh: () => Promise<void>; setNotice: (value: string) => void;
 }) {
   const [loading, setLoading] = useState(false);
+  const canManage = role === "operator_manager" || role === "system_admin";
   const runAnalysis = async () => {
     setLoading(true);
     try {
@@ -639,18 +690,39 @@ function AnalysisPage({ incident, analysis, setAnalysis, refresh, setNotice }: {
       await refresh();
     } catch (error) { setNotice(String(error)); } finally { setLoading(false); }
   };
-  const approve = async () => {
+  const decide = async (decision: "approve" | "approve_with_changes" | "reject") => {
     if (!analysis) return;
     try {
-      await api<WorkOrder>("/api/v1/approvals", {
+      const checklist = analysis.recommended_actions.map((item) => item.instruction);
+      if (decision === "approve_with_changes") {
+        checklist.unshift("관리자가 수정한 안전 조건과 작업 범위를 현장에서 재확인");
+      }
+      await api<WorkOrder | Record<string, unknown>>("/api/v1/approvals", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analysis_id: analysis.id, incident_id: incident.id, decision: "approve", reviewer_id: "local-manager", comment: "분석 근거와 안전 절차 확인 후 승인", checklist: analysis.recommended_actions.map((item) => item.instruction) }),
+        body: JSON.stringify({
+          analysis_id: analysis.id,
+          incident_id: incident.id,
+          decision,
+          reviewer_id: "local-manager",
+          comment: decision === "reject"
+            ? "분석 근거 또는 조치 계획 보완 필요"
+            : decision === "approve_with_changes"
+              ? "안전 조건을 보강하여 수정 승인"
+              : "분석 근거와 안전 절차 확인 후 승인",
+          checklist,
+        }),
       });
+      if (decision === "reject") {
+        setNotice("조치안이 반려되었습니다. 전문가 검토와 재분석이 필요합니다.");
+        return;
+      }
       await api(`/api/v1/incidents/${incident.id}/status`, {
         method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "approved" }),
       });
       await refresh();
-      setNotice("조치안이 승인되어 작업 티켓이 생성되었습니다.");
+      setNotice(decision === "approve_with_changes"
+        ? "수정 조치안이 승인되어 작업 티켓이 생성되었습니다."
+        : "조치안이 승인되어 작업 티켓이 생성되었습니다.");
     } catch (error) { setNotice(String(error)); }
   };
   return (
@@ -659,7 +731,7 @@ function AnalysisPage({ incident, analysis, setAnalysis, refresh, setNotice }: {
         <PanelHeader title={`장애 ${incident.id.slice(0, 8)}`} subtitle={`${incident.equipment_id} · ${incident.payload.error_code}`} />
         <div className="sensor-reading"><span>{incident.payload.sensor_type}</span><strong>{incident.payload.measured_value}</strong><small>임계값 {incident.payload.threshold}</small></div>
         <div className="log-box">{incident.payload.log_excerpt}</div>
-        <button className="primary wide" onClick={runAnalysis} disabled={loading}>
+        <button className="primary wide" onClick={runAnalysis} disabled={loading || !canManage}>
           <Bot size={18} /> {loading ? "근거를 분석하는 중..." : "AI 원인 분석 실행"}
         </button>
       </section>
@@ -678,7 +750,7 @@ function AnalysisPage({ incident, analysis, setAnalysis, refresh, setNotice }: {
             {analysis.causes.map((cause) => <div className="cause-card" key={cause.cause}><strong>{cause.cause}</strong><span>{Math.round(cause.confidence * 100)}%</span><p>{cause.evidence.join(" · ")}</p></div>)}
             <h4>권장 조치 계획</h4>
             <ol className="action-list">{analysis.recommended_actions.map((action) => <li key={action.sequence}><span>{action.sequence}</span><div>{action.instruction}{action.hazardous && <small>위험 작업 · 관리자 승인 필수</small>}</div></li>)}</ol>
-            <div className="approval-bar"><button className="secondary">수정 후 승인</button><button className="danger-ghost">반려</button><button className="primary" onClick={approve}><ShieldCheck size={17} /> 승인 및 티켓 생성</button></div>
+            {canManage && <div className="approval-bar"><button className="secondary" onClick={() => decide("approve_with_changes")}>수정 후 승인</button><button className="danger-ghost" onClick={() => decide("reject")}>반려</button><button className="primary" onClick={() => decide("approve")}><ShieldCheck size={17} /> 승인 및 티켓 생성</button></div>}
           </>
         )}
       </section>
@@ -693,20 +765,101 @@ function EquipmentPage({ equipment }: { equipment: Equipment[] }) {
 function WorkOrdersPage({ workOrders, role, refresh, setNotice }: {
   workOrders: WorkOrder[]; role: string; refresh: () => Promise<void>; setNotice: (value: string) => void;
 }) {
-  const complete = async (order: WorkOrder) => {
+  return <div className="work-list">{workOrders.length === 0
+    ? <EmptyState title="생성된 작업 티켓이 없습니다" />
+    : workOrders.map((order) => (
+      <WorkOrderCard
+        key={order.id}
+        order={order}
+        editable={role === "field_worker" || role === "system_admin"}
+        refresh={refresh}
+        setNotice={setNotice}
+      />
+    ))}</div>;
+}
+
+function WorkOrderCard({ order, editable, refresh, setNotice }: {
+  order: WorkOrder;
+  editable: boolean;
+  refresh: () => Promise<void>;
+  setNotice: (value: string) => void;
+}) {
+  const [completedItems, setCompletedItems] = useState<string[]>(order.completed_items);
+  const [evidence, setEvidence] = useState<File | null>(null);
+  const [fieldNote, setFieldNote] = useState("");
+  const [actualCause, setActualCause] = useState("");
+  const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
+  const [causeAccuracy, setCauseAccuracy] = useState(4);
+  const [actionUsefulness, setActionUsefulness] = useState(4);
+
+  const toggleItem = (item: string) => {
+    setCompletedItems((current) => current.includes(item)
+      ? current.filter((value) => value !== item)
+      : [...current, item]);
+  };
+
+  const complete = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
     try {
+      if (!evidence) throw new Error("현장 증적 사진을 선택하세요.");
+      const form = new FormData();
+      form.append("file", evidence);
+      const uploaded = await api<{ key: string }>(
+        `/api/v1/work-orders/${order.id}/evidence`,
+        { method: "POST", body: form },
+      );
       await api(`/api/v1/work-orders/${order.id}/complete`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ completed_items: order.checklist, photo_keys: ["local/evidence/photo-001.jpg"], field_note: "체크리스트 수행 및 시험 가동 완료", actual_cause: "베어링 윤활 불량", recovery_confirmed: true }),
+        body: JSON.stringify({
+          completed_items: completedItems,
+          photo_keys: [uploaded.key],
+          field_note: fieldNote,
+          actual_cause: actualCause,
+          recovery_confirmed: recoveryConfirmed,
+        }),
+      });
+      await api("/api/v1/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          incident_id: order.incident_id,
+          analysis_id: order.analysis_id,
+          cause_accuracy: causeAccuracy,
+          action_usefulness: actionUsefulness,
+          actual_cause: actualCause,
+          comment: fieldNote,
+        }),
       });
       await refresh();
       setNotice("현장 작업과 정상 복구 확인이 완료되었습니다.");
     } catch (error) { setNotice(String(error)); }
   };
-  return <div className="work-list">{workOrders.length === 0 ? <EmptyState title="생성된 작업 티켓이 없습니다" /> : workOrders.map((order) => <article className="panel work-card" key={order.id}><div><span className={`status-label ${order.status}`}>{order.status}</span><h3>작업 티켓 #{order.id.slice(0, 8)}</h3><p>장애 #{order.incident_id.slice(0, 8)}</p></div><ul>{order.checklist.map((item) => <li key={item}><CheckCircle2 size={17} /> {item}</li>)}</ul>{role === "field_worker" && order.status !== "resolved" && <button className="primary" onClick={() => complete(order)}><Wrench size={17} /> 작업 완료 등록</button>}</article>)}</div>;
+
+  return (
+    <article className="panel work-card">
+      <div><span className={`status-label ${order.status}`}>{order.status}</span><h3>작업 티켓 #{order.id.slice(0, 8)}</h3><p>장애 #{order.incident_id.slice(0, 8)}</p></div>
+      <ul>{order.checklist.map((item) => <li key={item}>
+        {editable && order.status !== "resolved"
+          ? <input type="checkbox" checked={completedItems.includes(item)} onChange={() => toggleItem(item)} />
+          : <CheckCircle2 size={17} />}
+        {item}
+      </li>)}</ul>
+      {editable && order.status !== "resolved" && (
+        <form className="work-completion-form" onSubmit={complete}>
+          <label>현장 증적 사진<input type="file" accept="image/*" required onChange={(event) => setEvidence(event.target.files?.[0] ?? null)} /></label>
+          <label>현장 메모<textarea required minLength={3} value={fieldNote} onChange={(event) => setFieldNote(event.target.value)} /></label>
+          <label>실제 장애 원인<input required minLength={3} value={actualCause} onChange={(event) => setActualCause(event.target.value)} /></label>
+          <label>AI 원인 정확도<select value={causeAccuracy} onChange={(event) => setCauseAccuracy(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}점</option>)}</select></label>
+          <label>조치안 유용성<select value={actionUsefulness} onChange={(event) => setActionUsefulness(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((score) => <option key={score} value={score}>{score}점</option>)}</select></label>
+          <label className="recovery-check"><input type="checkbox" checked={recoveryConfirmed} onChange={(event) => setRecoveryConfirmed(event.target.checked)} /> 시험 가동 후 정상 복구 확인</label>
+          <button className="primary" type="submit"><Wrench size={17} /> 작업 완료 등록</button>
+        </form>
+      )}
+    </article>
+  );
 }
 
-function DocumentsPage({ setNotice }: { setNotice: (value: string) => void }) {
+function DocumentsPage({ role, setNotice }: { role: string; setNotice: (value: string) => void }) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<KnowledgeHit[]>([]);
   const upload = async (event: FormEvent<HTMLFormElement>) => {
@@ -722,7 +875,8 @@ function DocumentsPage({ setNotice }: { setNotice: (value: string) => void }) {
     try { setHits(await api(`/api/v1/documents/search?q=${encodeURIComponent(query)}`)); }
     catch (error) { setNotice(String(error)); }
   };
-  return <div className="documents-grid"><section className="panel"><PanelHeader title="문서 등록" subtitle="정비 매뉴얼과 과거 장애 사례를 등록합니다." /><form className="upload-form" onSubmit={upload}><div className="dropzone"><Upload /><strong>파일 선택</strong><p>TXT, MD, CSV, JSON 및 Bedrock 지원 문서</p><input type="file" name="file" required /></div><select name="document_type"><option value="manual">정비 매뉴얼</option><option value="incident_case">과거 장애 사례</option><option value="procedure">작업 절차서</option></select><button className="primary wide">문서 등록</button></form></section><section className="panel"><PanelHeader title="지식 검색" subtitle="분석에 사용될 근거 청크를 확인합니다." /><div className="search-row"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="예: 베어링 온도 상승" onKeyDown={(event) => event.key === "Enter" && search()} /><button onClick={search}>검색</button></div><div className="search-results">{hits.map((hit) => <article key={hit.location}><span>{Math.round(hit.score * 100)}% 일치</span><p>{hit.content}</p><small>{hit.location}</small></article>)}</div></section></div>;
+  const canManage = role === "operator_manager" || role === "system_admin";
+  return <div className="documents-grid"><section className="panel"><PanelHeader title="문서 등록" subtitle="정비 매뉴얼과 과거 장애 사례를 등록합니다." />{canManage ? <form className="upload-form" onSubmit={upload}><div className="dropzone"><Upload /><strong>파일 선택</strong><p>TXT, MD, CSV, JSON 및 Bedrock 지원 문서</p><input type="file" name="file" required /></div><select name="document_type"><option value="manual">정비 매뉴얼</option><option value="incident_case">과거 장애 사례</option><option value="procedure">작업 절차서</option></select><button className="primary wide">문서 등록</button></form> : <p className="table-empty">문서 등록 권한이 없습니다.</p>}</section><section className="panel"><PanelHeader title="지식 검색" subtitle="분석에 사용될 근거 청크를 확인합니다." /><div className="search-row"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="예: 베어링 온도 상승" onKeyDown={(event) => event.key === "Enter" && search()} /><button onClick={search}>검색</button></div><div className="search-results">{hits.map((hit) => <article key={hit.location}><span>{Math.round(hit.score * 100)}% 일치</span><p>{hit.content}</p><small>{hit.location}</small></article>)}</div></section></div>;
 }
 
 function MetricsPage({ metrics }: { metrics: Metrics }) {
@@ -735,7 +889,7 @@ function MetricsPage({ metrics }: { metrics: Metrics }) {
 
 function IncidentTable({ incidents, onIncident }: { incidents: Incident[]; onIncident: (incident: Incident) => void }) {
   if (!incidents.length) return <div className="table-empty">감지된 장애가 없습니다.</div>;
-  return <div className="table-wrap"><table><thead><tr><th>위험도</th><th>설비</th><th>오류 코드</th><th>측정값</th><th>상태</th><th>감지 시각</th><th /></tr></thead><tbody>{incidents.map((incident) => <tr key={incident.id}><td><span className={`severity ${incident.severity}`}>{incident.severity}</span></td><td><strong>{incident.equipment_id}</strong></td><td>{incident.payload.error_code}</td><td>{incident.payload.measured_value} <small>/ {incident.payload.threshold}</small></td><td><span className="status-label">{statusLabel(incident.status)}</span></td><td>{new Date(incident.detected_at).toLocaleString("ko-KR")}</td><td><button className="icon-button" onClick={() => onIncident(incident)}><ChevronRight /></button></td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>위험도</th><th>설비</th><th>감지 방식</th><th>오류 코드</th><th>측정값</th><th>상태</th><th>감지 시각</th><th /></tr></thead><tbody>{incidents.map((incident) => <tr key={incident.id}><td><span className={`severity ${incident.severity}`}>{incident.severity}</span></td><td><strong>{incident.equipment_id}</strong></td><td>{incident.source === "automatic" ? "자동 감지" : "수동 생성"}</td><td>{incident.payload.error_code}</td><td>{incident.payload.measured_value} <small>/ {incident.payload.threshold}</small></td><td><span className="status-label">{statusLabel(incident.status)}</span></td><td>{new Date(incident.detected_at).toLocaleString("ko-KR")}</td><td><button className="icon-button" onClick={() => onIncident(incident)}><ChevronRight /></button></td></tr>)}</tbody></table></div>;
 }
 
 function Kpi({ icon: Icon, label, value, unit = "", trend, tone }: { icon: typeof Activity; label: string; value: number | string; unit?: string; trend: string; tone: string }) {
