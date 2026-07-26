@@ -3,12 +3,14 @@ from enum import StrEnum
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, HTTPException, Query, status
+import jwt
+from fastapi import Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from shared.api import create_app
-from shared.auth import Principal, Role, require_roles
+from shared.auth import Principal, Role, get_token_verifier, require_roles
+from shared.config import get_settings
 from shared.dynamodb import get_repository
 
 app = create_app("incident-service")
@@ -60,6 +62,60 @@ class TelemetryRecord(TelemetryRequest):
     received_at: datetime
 
 
+class TelemetryConnectionManager:
+    def __init__(self) -> None:
+        self._connections: set[WebSocket] = set()
+
+    async def connect(self, websocket: WebSocket, subprotocol: str | None = None) -> None:
+        await websocket.accept(subprotocol=subprotocol)
+        self._connections.add(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        self._connections.discard(websocket)
+
+    async def broadcast(self, telemetry: TelemetryRecord) -> None:
+        message = telemetry.model_dump(mode="json")
+        disconnected: list[WebSocket] = []
+        for websocket in tuple(self._connections):
+            try:
+                await websocket.send_json(message)
+            except (OSError, RuntimeError, WebSocketDisconnect):
+                disconnected.append(websocket)
+        for websocket in disconnected:
+            self.disconnect(websocket)
+
+
+telemetry_connections = TelemetryConnectionManager()
+
+
+def _websocket_access_token(websocket: WebSocket) -> tuple[str | None, str | None]:
+    protocols = [
+        value.strip()
+        for value in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if value.strip()
+    ]
+    if len(protocols) >= 2 and protocols[0] == "access-token":
+        return protocols[1], "access-token"
+    return None, None
+
+
+async def _authorize_websocket(websocket: WebSocket) -> str | None:
+    if get_settings().auth_mode == "disabled":
+        return None
+
+    token, subprotocol = _websocket_access_token(websocket)
+    if token is None:
+        await websocket.close(code=4401, reason="Access token required")
+        return None
+
+    try:
+        await run_in_threadpool(get_token_verifier().verify, token)
+    except (jwt.PyJWTError, RuntimeError):
+        await websocket.close(code=4401, reason="Invalid or expired access token")
+        return None
+    return subprotocol
+
+
 ALLOWED_TRANSITIONS: dict[IncidentStatus, set[IncidentStatus]] = {
     IncidentStatus.DETECTED: {IncidentStatus.ANALYZING},
     IncidentStatus.ANALYZING: {
@@ -99,6 +155,7 @@ async def ingest_telemetry(
         telemetry.id,
         telemetry,
     )
+    await telemetry_connections.broadcast(telemetry)
     return telemetry
 
 
@@ -109,6 +166,20 @@ async def list_telemetry(
     values = await run_in_threadpool(get_repository().list, "telemetry")
     records = [TelemetryRecord.model_validate(value) for value in values]
     return sorted(records, key=lambda item: item.received_at, reverse=True)[:limit]
+
+
+@app.websocket("/api/v1/telemetry/ws")
+async def telemetry_websocket(websocket: WebSocket) -> None:
+    subprotocol = await _authorize_websocket(websocket)
+    if get_settings().auth_mode != "disabled" and subprotocol is None:
+        return
+
+    await telemetry_connections.connect(websocket, subprotocol)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        telemetry_connections.disconnect(websocket)
 
 
 @app.post(

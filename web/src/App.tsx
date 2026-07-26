@@ -323,6 +323,14 @@ const demoSensors = [
   { equipment_id: "MOTOR-002", sensor_type: "motor_current", unit: "A", threshold: 42, base: 31 },
 ];
 
+function mergeTelemetry(current: Telemetry[], incoming: Telemetry[]) {
+  const recordsById = new Map(current.map((record) => [record.id, record]));
+  incoming.forEach((record) => recordsById.set(record.id, record));
+  return [...recordsById.values()]
+    .sort((left, right) => Date.parse(right.received_at) - Date.parse(left.received_at))
+    .slice(0, 100);
+}
+
 function LiveDataPage({ setNotice }: { setNotice: (value: string) => void }) {
   const [records, setRecords] = useState<Telemetry[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -331,11 +339,9 @@ function LiveDataPage({ setNotice }: { setNotice: (value: string) => void }) {
   const loadTelemetry = useCallback(async () => {
     try {
       const data = await api<Telemetry[]>("/api/v1/telemetry?limit=100");
-      setRecords(data);
-      setConnected(true);
+      setRecords((current) => mergeTelemetry(current, data));
     } catch (error) {
-      setConnected(false);
-      setNotice(`실시간 데이터 연결 실패: ${String(error)}`);
+      setNotice(`초기 실시간 데이터 조회 실패: ${String(error)}`);
     }
   }, [setNotice]);
 
@@ -358,14 +364,57 @@ function LiveDataPage({ setNotice }: { setNotice: (value: string) => void }) {
           : `${sensor.sensor_type} sample received`,
       }),
     });
-    await loadTelemetry();
-  }, [loadTelemetry]);
+  }, []);
 
   useEffect(() => {
     loadTelemetry();
-    const poller = window.setInterval(loadTelemetry, 2000);
-    return () => window.clearInterval(poller);
   }, [loadTelemetry]);
+
+  useEffect(() => {
+    let disposed = false;
+    let socket: WebSocket | undefined;
+    let reconnectTimer: number | undefined;
+
+    const connect = async () => {
+      const token = await getAccessToken();
+      if (disposed) return;
+
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const url = `${protocol}//${window.location.host}/api/v1/telemetry/ws`;
+      socket = token
+        ? new WebSocket(url, ["access-token", token])
+        : new WebSocket(url);
+
+      socket.onopen = () => setConnected(true);
+      socket.onmessage = (event) => {
+        try {
+          const telemetry = JSON.parse(event.data) as Telemetry;
+          setRecords((current) => mergeTelemetry(current, [telemetry]));
+        } catch (error) {
+          setNotice(`WebSocket 메시지 처리 실패: ${String(error)}`);
+        }
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        setConnected(false);
+        if (!disposed) reconnectTimer = window.setTimeout(connect, 1500);
+      };
+    };
+
+    connect().catch((error) => {
+      setConnected(false);
+      setNotice(`WebSocket 연결 실패: ${String(error)}`);
+    });
+
+    return () => {
+      disposed = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (socket) {
+        socket.onclose = null;
+        socket.close();
+      }
+    };
+  }, [setNotice]);
 
   useEffect(() => {
     if (!streaming) return;
@@ -395,7 +444,7 @@ function LiveDataPage({ setNotice }: { setNotice: (value: string) => void }) {
         <div>
           <div className="stream-title">
             <span className={connected ? "pulse connected" : "pulse"} />
-            <div><h3>센서 수신 스트림</h3><p>2초마다 최신 데이터를 확인합니다.</p></div>
+            <div><h3>센서 수신 스트림</h3><p>WebSocket으로 데이터를 즉시 수신합니다.</p></div>
           </div>
         </div>
         <div className="stream-actions">
@@ -408,7 +457,7 @@ function LiveDataPage({ setNotice }: { setNotice: (value: string) => void }) {
       </section>
 
       <section className="live-kpis">
-        <Kpi icon={Radio} label="연결 상태" value={connected ? "ONLINE" : "OFFLINE"} trend="Incident service" tone={connected ? "green" : "red"} />
+        <Kpi icon={Radio} label="연결 상태" value={connected ? "ONLINE" : "OFFLINE"} trend="WebSocket / Incident service" tone={connected ? "green" : "red"} />
         <Kpi icon={Activity} label="수신 데이터" value={records.length} unit="건" trend="최근 100건" tone="blue" />
         <Kpi icon={AlertTriangle} label="이상 신호" value={abnormalCount} unit="건" trend="임계치 기준" tone="amber" />
         <Kpi icon={Gauge} label="최근 수신" value={records[0] ? new Date(records[0].received_at).toLocaleTimeString("ko-KR") : "-"} trend="자동 갱신" tone="violet" />

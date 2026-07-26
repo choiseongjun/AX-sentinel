@@ -144,8 +144,10 @@ EC2 Managed Node Group은 Pod가 공유하는 컴퓨팅 기반입니다.
 - AI 운영 지표
 
 `실시간 데이터` 화면은 수신된 센서값, 임계치 상태, 최근 로그와 파형을
-2초 간격으로 갱신합니다. `데모 스트림 시작` 버튼을 누르면 로컬 테스트
-데이터가 약 1.5초 간격으로 생성됩니다.
+WebSocket으로 즉시 갱신합니다. 화면 진입 시 최근 100건만 HTTP로 불러오고
+그 이후 데이터는 `ws://<host>/api/v1/telemetry/ws`로 수신합니다.
+`데모 스트림 시작` 버튼을 누르면 로컬 테스트 데이터가 약 1.5초 간격으로
+생성됩니다.
 
 ## 빠른 시작
 
@@ -270,7 +272,7 @@ EKS의 Incident API로 센서 데이터와 로그를 1초 간격으로 계속 �
 | AI 분석 | 결정론적인 mock 분석기 | Bedrock Converse |
 | RAG | DynamoDB 저장 텍스트 검색 | Bedrock Knowledge Bases |
 | 데이터 | LocalStack DynamoDB/S3 | AWS DynamoDB/S3 |
-| 센서 갱신 | HTTP 수신 + 2초 폴링 | 동일 API, 향후 스트리밍 확장 가능 |
+| 센서 갱신 | HTTP 수집 + WebSocket push | HTTP 수집 + WebSocket push |
 | 실행 환경 | Docker Compose | EKS Pod + HPA |
 
 로컬에서 역할을 선택해도 API는 개발용 principal에 모든 역할을 부여합니다.
@@ -659,7 +661,9 @@ AXSentinel/
 
 ## 현재 프로토타입 제한사항
 
-- 실시간 화면은 WebSocket이 아닌 2초 HTTP 폴링 방식입니다.
+- WebSocket 브로드캐스트는 현재 Incident Service 프로세스 메모리에 연결을
+  보관합니다. 운영 환경에서 Incident Pod를 여러 개 실행할 때는 Redis
+  Pub/Sub, Amazon MSK 또는 별도 스트림 게이트웨이로 fan-out해야 합니다.
 - LocalStack에서 지원하지 않는 Bedrock/Cognito 기능은 mock 또는 비활성
   모드로 실행됩니다.
 - DynamoDB 목록 API는 현재 filtered scan을 사용하므로 운영 트래픽 전
