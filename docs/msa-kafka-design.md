@@ -59,15 +59,18 @@ flowchart TB
     Metrics["Metrics Service<br/>FastAPI + Consumer"]
     Realtime["Realtime Gateway<br/>FastAPI WebSocket"]
     Notification["Notification Consumer"]
-    Cognito["Amazon Cognito OIDC"]
+    Keycloak["Keycloak OIDC"]
     Kafka["Kafka / Amazon MSK"]
     Redis["Redis Pub/Sub"]
     Ollama["Local Ollama"]
     Bedrock["Amazon Bedrock"]
+    FluentBit["Fluent Bit"]
+    Elasticsearch["Elasticsearch"]
+    Kibana["Kibana"]
 
     User --> Web
-    Web --> Cognito
-    Cognito --> Web
+    Web --> Keycloak
+    Keycloak --> Web
     Web --> Ingress
 
     Ingress --> Identity
@@ -92,14 +95,26 @@ flowchart TB
     Realtime <--> Redis
     Analysis --> Ollama
     Analysis --> Bedrock
+    Identity -. JSON log .-> FluentBit
+    Asset -. JSON log .-> FluentBit
+    Incident -. JSON log .-> FluentBit
+    Analysis -. JSON log .-> FluentBit
+    Knowledge -. JSON log .-> FluentBit
+    Work -. JSON log .-> FluentBit
+    Metrics -. JSON log .-> FluentBit
+    Realtime -. JSON log .-> FluentBit
+    Keycloak -. auth/admin log .-> FluentBit
+    Kafka -. broker log .-> FluentBit
+    FluentBit --> Elasticsearch
+    Elasticsearch --> Kibana
 ```
 
 ### 로컬 및 AWS 배치
 
 | 환경 | Kafka | AI | 인증 |
 | --- | --- | --- | --- |
-| LocalStack EKS | KRaft 기반 로컬 Kafka 또는 Strimzi Kafka | Ollama | 개발 모드 또는 LocalStack Cognito |
-| AWS 개발/운영 | Amazon MSK Serverless/Provisioned | Bedrock | Amazon Cognito |
+| LocalStack EKS | KRaft 기반 로컬 Kafka 또는 Strimzi Kafka | Ollama | Keycloak |
+| AWS 개발/운영 | Amazon MSK Serverless/Provisioned | Bedrock | EKS Keycloak |
 | 자동화 테스트 | Testcontainers Kafka | deterministic mock | 테스트 principal |
 
 Kafka는 AWS API 에뮬레이터가 아니라 Kafka protocol을 직접 사용한다. 로컬
@@ -130,13 +145,16 @@ partition과 IAM policy를 사용한다. 다른 서비스의 table을 직접 조
 
 ## 5. 인증 및 로그인 설계
 
+Realm, client, role, 서비스 계정과 운영 로그의 상세 기준은
+[Keycloak 인증 및 EFK 중앙 로그 설계](keycloak-efk-design.md)를 따른다.
+
 ### 사용자 로그인
 
 ```mermaid
 sequenceDiagram
     actor U as 사용자
     participant W as React Web
-    participant C as Cognito
+    participant C as Keycloak
     participant I as Ingress
     participant ID as Identity Service
     participant K as Kafka
@@ -149,13 +167,13 @@ sequenceDiagram
     C-->>W: access/id token
     W->>I: POST /api/v1/session/bootstrap<br/>Bearer access token
     I->>ID: JWT가 포함된 요청 전달
-    ID->>ID: JWKS, issuer, client_id, role 검증
+    ID->>ID: JWKS, issuer, audience, role 검증
     ID-->>W: 사용자 프로필과 허용 메뉴
     ID->>K: identity.session.started.v1
     K->>M: 로그인 감사 projection
 ```
 
-`session/bootstrap`은 Cognito 로그인을 대신하지 않는다. Cognito가 인증을
+`session/bootstrap`은 Keycloak 로그인을 대신하지 않는다. Keycloak이 인증을
 담당하고 Identity Service는 검증된 claim을 내부 사용자 프로필과 연결하며
 로그인 감사 이벤트를 생성한다.
 
@@ -163,7 +181,7 @@ sequenceDiagram
 
 1. Web이 `POST /api/v1/session/end`를 호출한다.
 2. Identity Service가 `identity.session.ended.v1`을 발행한다.
-3. Web이 Cognito logout endpoint로 이동하고 로컬 token을 제거한다.
+3. Web이 Keycloak end-session endpoint로 이동하고 로컬 token을 제거한다.
 4. Kafka 이벤트에는 token이 아닌 `user_id`, `session_id`, 시각과 결과만
    기록한다.
 
@@ -419,6 +437,11 @@ Telemetry 원본 전체를 모든 브라우저에 전송하지 않고 화면에�
 ## 12. 관측성과 운영
 
 모든 REST 요청과 Kafka 이벤트는 같은 `correlation_id`를 사용한다.
+애플리케이션, Keycloak, Kafka와 Kubernetes 로그는 Fluent Bit이 수집해
+Elasticsearch data stream에 저장하고 Kibana에서 검색·경보한다. Kafka에는
+업무 이벤트만 보내며 일반 운영 로그의 운반 수단으로 사용하지 않는다. 상세
+수집·마스킹·보존 정책은
+[Keycloak 인증 및 EFK 중앙 로그 설계](keycloak-efk-design.md)를 따른다.
 
 필수 지표:
 
@@ -460,7 +483,21 @@ POST analysis request
 
 ## 14. 현재 구조에서의 전환 순서
 
-### 1단계: 공통 이벤트 기반
+### 1단계: Keycloak과 Identity
+
+- 로컬 EKS에 Keycloak과 개발용 PostgreSQL 배포
+- `ax-sentinel` realm, Web client, 서비스별 client와 3개 사용자 역할 import
+- 공통 FastAPI OIDC verifier와 Identity Service 추가
+- React Authorization Code + PKCE 로그인과 역할별 API 접근 시험
+
+### 2단계: EFK 로그 기반
+
+- 모든 FastAPI 서비스와 Keycloak에 JSON stdout logging 적용
+- Fluent Bit DaemonSet, Elasticsearch data stream과 Kibana 배포
+- token·비밀번호·민감 본문 마스킹 시험
+- 로그인부터 API 요청까지 correlation ID 검색과 기본 경보 검증
+
+### 3단계: 공통 이벤트 기반
 
 - `shared/events.py`에 Kafka Producer/Consumer abstraction 추가
 - 공통 envelope와 Pydantic event schema 추가
@@ -468,40 +505,34 @@ POST analysis request
 - 로컬 Kafka와 Schema Registry Helm 구성 추가
 - SQS publisher를 feature flag로 유지해 비교 가능하게 구성
 
-### 2단계: Identity와 로그인 흐름
+### 4단계: Identity 감사와 Incident 이벤트 전환
 
-- Identity Service와 `/session/bootstrap`, `/session/end`, `/me` 추가
-- Cognito claim과 내부 사용자 프로필·역할 연결
 - 로그인/로그아웃 감사 이벤트를 Outbox로 발행
-- token·비밀번호 미기록과 역할별 API 접근 시험
-
-### 3단계: Incident 이벤트 전환
-
 - `incident.detected`를 Kafka와 기존 SQS에 dual publish
 - Kafka Consumer 처리 이력과 Inbox 구현
 - 결과 비교 후 SQS Event Worker를 Kafka Consumer로 교체
 - Telemetry topic과 anomaly consumer 분리
 
-### 4단계: 비동기 AI 분석
+### 5단계: 비동기 AI 분석
 
 - `POST /analysis-requests`를 `202 Accepted` 방식으로 변경
 - `analysis.commands` Consumer가 Ollama/Bedrock 실행
 - 분석 진행 상태를 Kafka와 WebSocket으로 전송
 - retry/DLQ와 timeout 정책 적용
 
-### 5단계: 승인과 작업 Saga
+### 6단계: 승인과 작업 Saga
 
 - 승인 후 `action-plan.approved` 이벤트 발행
 - Work Order Service가 티켓 생성
 - `work-order.completed`를 Incident와 Metrics가 각각 소비
 - 보상 동작과 수동 재처리 API 추가
 
-### 6단계: 데이터 소유권 분리
+### 7단계: 데이터 소유권 분리
 
 - 서비스별 DynamoDB table/IAM policy 분리
 - 타 서비스 table 직접 접근을 REST 또는 projection으로 교체
 
-### 7단계: 운영 전환
+### 8단계: 운영 전환
 
 - Amazon MSK, Glue Schema Registry, TLS/SASL 적용
 - Consumer lag, Outbox, DLQ 대시보드와 경보 추가
@@ -512,14 +543,14 @@ POST analysis request
 
 | 순서 | 구현 항목 | 완료 조건 |
 | --- | --- | --- |
-| 1 | Kafka 로컬 클러스터와 공통 event library | 샘플 event publish/consume |
-| 2 | Kafka Inbox/Outbox | 중복 이벤트 테스트 통과 |
-| 3 | Identity Service | 로그인 bootstrap, 역할, 감사 이벤트 |
-| 4 | Incident dual publish | SQS/Kafka payload 비교 통과 |
+| 1 | Keycloak과 Identity Service | PKCE 로그인, 역할, `/me` 검증 |
+| 2 | EFK와 공통 JSON logging | Kibana 검색, 마스킹, 경보 검증 |
+| 3 | Kafka 로컬 클러스터와 공통 event library | 샘플 event publish/consume |
+| 4 | Kafka Inbox/Outbox와 Incident dual publish | 중복·복구 및 SQS/Kafka 비교 시험 |
 | 5 | AI 분석 비동기화 | REST 202, Kafka 완료, UI push |
 | 6 | Work Order Saga | 승인부터 장애 해결까지 이벤트 연결 |
 | 7 | 서비스별 데이터 소유권 | 교차 table 접근 제거 |
-| 8 | MSK 운영 구성 | TLS/SASL, lag/DLQ 경보 검증 |
+| 8 | MSK·HA Keycloak·EFK 운영 구성 | TLS/SASL, lag/DLQ, ILM, backup 검증 |
 
 ## 16. 수용 기준
 

@@ -3,6 +3,8 @@
 This document describes the current runtime architecture. The target design for
 service-owned data, login/session flow, REST commands, and Kafka domain events is
 documented in [MSA and Kafka communication design](msa-kafka-design.md).
+The target Keycloak authentication and EFK centralized logging architecture is
+documented in [Keycloak and EFK design](keycloak-efk-design.md).
 
 ## Goals
 
