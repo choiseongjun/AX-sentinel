@@ -1,5 +1,9 @@
 # AX Sentinel architecture
 
+This document describes the current runtime architecture. The target design for
+service-owned data, login/session flow, REST commands, and Kafka domain events is
+documented in [MSA and Kafka communication design](msa-kafka-design.md).
+
 ## Goals
 
 AX Sentinel detects virtual equipment anomalies, assists operators with
@@ -33,8 +37,12 @@ flowchart LR
     KS --> S3["S3 manuals / evidence"]
     KS --> KB["Bedrock Knowledge Base"]
     KB --> VS["S3 Vectors index"]
-    AI --> KB
-    AI --> BR["Amazon Bedrock"]
+    AI --> RAG["RAG provider"]
+    RAG --> DB
+    RAG --> KB
+    AI --> LLM["AI provider"]
+    LLM --> OL["Local Ollama"]
+    LLM --> BR["Amazon Bedrock"]
 
     subgraph EKS["Amazon EKS"]
         ALB

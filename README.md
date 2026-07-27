@@ -918,5 +918,6 @@ docker compose logs --tail 200 <service-name>
 ## 추가 문서
 
 - [상세 아키텍처와 안전 상태 머신](docs/architecture.md)
+- [MSA 및 Kafka 서비스 통신 설계](docs/msa-kafka-design.md)
 - [실행 및 전체 테스트 가이드](docs/testing-guide.md)
 - [샘플 베어링 정비 매뉴얼](samples/documents/bearing-maintenance.md)
