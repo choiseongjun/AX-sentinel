@@ -32,6 +32,7 @@ import {
   restoreUser,
   roleFromUser,
   signOut,
+  subscribeToSessionEnd,
 } from "./auth";
 
 type Page =
@@ -284,6 +285,14 @@ function App() {
       .catch((error) => setNotice(String(error)))
       .finally(() => setAuthLoading(false));
   }, []);
+
+  useEffect(
+    () => subscribeToSessionEnd(() => {
+      setRole(null);
+      setNotice("인증 세션이 종료되었습니다. 다시 로그인하세요.");
+    }),
+    [],
+  );
 
   const refresh = useCallback(async () => {
     const [incidentData, equipmentData, orderData, reviewData, metricData] = await Promise.all([

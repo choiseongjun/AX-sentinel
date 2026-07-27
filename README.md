@@ -127,9 +127,9 @@ AI 도입 효과는 단순 답변 생성 건수가 아니라 장애 대응 결�
 | 현장 작업자 | 작업 티켓 수행, 체크리스트·사진·메모·실제 원인 등록 |
 | 시스템 관리자 | 사용자·문서·AI 운영 설정 및 전체 관리 |
 
-역할명은 `operator_manager`, `field_worker`, `system_admin`입니다. 현재
-구현은 Cognito group claim을 사용하고, 목표 구조에서는 같은 역할을
-Keycloak Realm role로 관리합니다.
+역할명은 `operator_manager`, `field_worker`, `system_admin`입니다. LocalStack
+EKS에서는 Keycloak Realm role을 사용하고, AWS 호환 모드에서는 같은 역할을
+Cognito group claim으로 변환합니다.
 
 ## 업무 흐름
 
@@ -154,11 +154,11 @@ flowchart LR
 ```mermaid
 flowchart TB
     User["운영 관리자 / 현장 작업자 / 시스템 관리자"]
-    Cognito["Amazon Cognito OIDC"]
+    OIDC["Keycloak OIDC<br/>AWS 호환: Cognito"]
     Web["React Web + Nginx"]
 
-    User --> Cognito
-    Cognito --> Web
+    User --> OIDC
+    OIDC --> Web
 
     Web --> Asset["Asset Service"]
     Web --> Incident["Incident Service"]
@@ -168,13 +168,13 @@ flowchart TB
     Web --> Metrics["Metrics Service"]
     Web --> EventWorker["Event Worker"]
 
-    Asset --> DDB["DynamoDB"]
-    Incident --> DDB
-    AI --> DDB
-    Knowledge --> DDB
-    Work --> DDB
-    Metrics --> DDB
-    EventWorker --> DDB
+    Asset --> AssetDB["Asset DynamoDB"]
+    Incident --> IncidentDB["Incident DynamoDB"]
+    AI --> AnalysisDB["Analysis DynamoDB"]
+    Knowledge --> KnowledgeDB["Knowledge DynamoDB"]
+    Work --> WorkDB["Work-order DynamoDB"]
+    Metrics --> MetricsDB["Metrics DynamoDB"]
+    EventWorker --> EventDB["Event DynamoDB"]
 
     Knowledge --> S3["S3 Documents"]
     Knowledge --> KB["Bedrock Knowledge Base"]
@@ -407,7 +407,7 @@ Copy-Item .env.example .env
 | --- | --- | --- |
 | `AWS_REGION` | `ap-northeast-2` | AWS 리전 |
 | `AWS_ENDPOINT_URL` | Compose에서 LocalStack 주소 지정 | AWS SDK endpoint override |
-| `DYNAMODB_TABLE` | `axsentinel-domain` | 도메인 데이터 테이블 |
+| `DYNAMODB_TABLE` | 서비스별 Helm/Compose 설정 | 해당 서비스가 소유한 DynamoDB 테이블 |
 | `DOCUMENTS_BUCKET` / `S3_BUCKET` | `axsentinel-local` | 문서 저장 버킷 |
 | `AUTH_MODE` | Compose: `disabled`, LocalStack EKS: `keycloak` | `disabled`, `keycloak` 또는 `cognito` |
 | `COGNITO_USER_POOL_ID` | 없음 | Cognito User Pool ID |
@@ -648,8 +648,9 @@ Invoke-RestMethod -Method Post `
 ### 현재 구현
 
 현재 실행 코드는 Keycloak, Cognito Authorization Code + PKCE와 Docker
-Compose용 비활성 로컬 인증 모드를 지원합니다. Cognito 모드에서 FastAPI
-미들웨어는 access token에 대해 다음 항목을 확인합니다.
+Compose용 비활성 로컬 인증 모드를 지원합니다. Keycloak 모드에서 FastAPI는
+JWKS 서명, issuer, audience, 만료 시간과 Realm role을 검증합니다. Cognito
+모드에서는 access token에 대해 다음 항목을 확인합니다.
 
 - JWKS 기반 RS256 서명
 - Cognito issuer
@@ -666,18 +667,24 @@ LocalStack EKS 배포는 Keycloak 26.7.0을 실제 인증 서버로 사용합니
 Keycloak Authorization Code + PKCE `S256`으로 로그인하고 FastAPI는 JWKS
 서명, issuer, audience, 만료 시간과 Realm role을 검증합니다.
 
-`http://localhost:8081`에서 `Keycloak로 로그인`을 누른 뒤 다음 로컬 개발
-계정으로 시험할 수 있습니다.
+`http://localhost:8081`에서 `Keycloak로 로그인`을 누른 뒤 `admin`,
+`manager`, `worker` 계정으로 역할별 기능을 시험할 수 있습니다. 비밀번호는
+Git에 저장하지 않으며 첫 배포 때 `.local/keycloak-credentials.json`에
+무작위로 생성됩니다.
 
-| 역할 | 아이디 | 비밀번호 |
-| --- | --- | --- |
-| 시스템 관리자 | `admin` | `Admin!2026` |
-| 운영 관리자 | `manager` | `Manager!2026` |
-| 현장 작업자 | `worker` | `Worker!2026` |
+```powershell
+Get-Content .local\keycloak-credentials.json
+```
 
 Keycloak 관리 콘솔은 `http://localhost:8081/keycloak/admin/`이며 로컬
-bootstrap 관리자는 `keycloak-admin` / `KeycloakAdmin!2026`입니다. 이 값은
-로컬 개발 전용이며 운영 환경에서 재사용하지 않습니다.
+bootstrap 사용자명은 `keycloak-admin`입니다. 비밀번호는 같은 로컬 자격
+증명 파일의 `adminPassword`입니다. 업무 시스템 관리자 `admin`은 첫 로그인
+때 TOTP 등록이 필요합니다.
+
+public web client의 Resource Owner Password Grant는 비활성화되어 있습니다.
+브라우저가 Authorization Code + PKCE로만 로그인하며, 자동 silent renew와
+로그아웃 시 token revoke를 수행합니다. Realm에는 brute-force 차단, 비밀번호
+정책, 사용자·관리자 이벤트 감사 설정이 적용됩니다.
 
 Docker Compose 단독 실행은 계속 비활성 로컬 인증 모드를 사용하고, 기존
 AWS 배포 설정은 Cognito 호환 모드를 유지합니다.
@@ -689,18 +696,25 @@ replica와 RDS PostgreSQL 구성이 추가로 필요합니다.
 
 ## 저장 구조
 
-도메인 데이터는 하나의 DynamoDB 테이블에 저장됩니다.
+각 FastAPI 서비스는 자체 DynamoDB 테이블만 소유합니다.
 
-| 속성 | 형식 |
+| 서비스 | 테이블 |
 | --- | --- |
-| `pk` | `<ENTITY_TYPE>#<ENTITY_ID>` |
-| `sk` | `METADATA` |
-| `entity_type` | 조회 필터용 엔터티 종류 |
-| `data` | 버전 가능한 도메인 JSON |
+| Asset | `axsentinel-asset` |
+| Incident | `axsentinel-incident` |
+| AI Analysis | `axsentinel-analysis` |
+| Knowledge | `axsentinel-knowledge` |
+| Work Order | `axsentinel-work-order` |
+| Metrics | `axsentinel-metrics` |
+| Event Worker | `axsentinel-events` |
 
-현재 엔터티 종류는 `equipment`, `telemetry`, `incident`, `analysis`,
-`expert_review`, `evaluation_case`, `evaluation_run`, `document`, `approval`,
-`work_order`, `feedback`입니다.
+레코드는 `pk=<ENTITY_TYPE>#<ENTITY_ID>`, `sk=METADATA` 형식을 유지합니다.
+목록 조회는 `entity_type-updated_at-index` GSI의 `Query`를 사용하고 페이지
+커서를 지원합니다. 갱신은 `version` 조건식을 사용해 동시 쓰기 손실을
+방지합니다. AI·Metrics·Work Order 서비스가 다른 도메인 데이터가 필요할
+때는 해당 소유 서비스의 내부 REST API를 호출하며 다른 서비스 테이블을
+직접 읽거나 수정하지 않습니다. 기존 `axsentinel-domain` 데이터는 배포
+스크립트가 서비스별 테이블로 멱등 마이그레이션합니다.
 
 문서 원본은 S3에 서버 측 암호화로 저장하고, 로컬 검색용 텍스트와 문서
 메타데이터는 DynamoDB에 저장합니다.
@@ -708,7 +722,9 @@ replica와 RDS PostgreSQL 구성이 추가로 필요합니다.
 LocalStack 시작 시 다음 리소스가 자동 생성됩니다.
 
 - S3 bucket: `axsentinel-local`
-- DynamoDB table: `axsentinel-domain`
+- DynamoDB tables: `axsentinel-asset`, `axsentinel-incident`,
+  `axsentinel-analysis`, `axsentinel-knowledge`, `axsentinel-work-order`,
+  `axsentinel-metrics`, `axsentinel-events`
 - SQS queue: `axsentinel-events`
 - SQS dead-letter queue: `axsentinel-events-dlq`
 - SNS topic: `axsentinel-alerts`

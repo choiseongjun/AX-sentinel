@@ -1,7 +1,9 @@
 from functools import lru_cache
 from typing import Any, Protocol
+from urllib.parse import urlencode
 
 import boto3
+import httpx
 from pydantic import BaseModel, Field
 
 from shared.config import get_settings
@@ -17,11 +19,32 @@ class RetrievedChunk(BaseModel):
 
 
 class Retriever(Protocol):
-    def retrieve(self, query: str, limit: int = 5) -> list[RetrievedChunk]: ...
+    def retrieve(
+        self,
+        query: str,
+        limit: int = 5,
+        authorization: str | None = None,
+    ) -> list[RetrievedChunk]: ...
 
 
 class LocalRetriever:
-    def retrieve(self, query: str, limit: int = 5) -> list[RetrievedChunk]:
+    def retrieve(
+        self,
+        query: str,
+        limit: int = 5,
+        authorization: str | None = None,
+    ) -> list[RetrievedChunk]:
+        settings = get_settings()
+        if settings.knowledge_service_url:
+            headers = {"Authorization": authorization} if authorization else {}
+            response = httpx.get(
+                f"{settings.knowledge_service_url}/api/v1/documents/search?"
+                f"{urlencode({'q': query, 'limit': limit})}",
+                headers=headers,
+                timeout=15,
+            )
+            response.raise_for_status()
+            return [RetrievedChunk.model_validate(item) for item in response.json()]
         terms = {term.casefold() for term in query.split() if len(term) >= 2}
         ranked: list[tuple[int, dict[str, Any]]] = []
         for document in get_repository().list("document"):
@@ -50,7 +73,12 @@ class BedrockKnowledgeBaseRetriever:
         self._knowledge_base_id = knowledge_base_id
         self._client = boto3.client("bedrock-agent-runtime", region_name=region)
 
-    def retrieve(self, query: str, limit: int = 5) -> list[RetrievedChunk]:
+    def retrieve(
+        self,
+        query: str,
+        limit: int = 5,
+        authorization: str | None = None,
+    ) -> list[RetrievedChunk]:
         response = self._client.retrieve(
             knowledgeBaseId=self._knowledge_base_id,
             retrievalQuery={"text": query},

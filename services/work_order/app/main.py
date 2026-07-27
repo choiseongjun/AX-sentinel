@@ -3,7 +3,8 @@ from pathlib import PurePosixPath
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, HTTPException, UploadFile, status
+import httpx
+from fastapi import Depends, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -108,6 +109,12 @@ async def list_work_orders() -> list[WorkOrder]:
     return [WorkOrder.model_validate(value) for value in values]
 
 
+@app.get("/api/v1/approvals", response_model=list[ApprovalRecord], tags=["approval"])
+async def list_approvals() -> list[ApprovalRecord]:
+    values = await run_in_threadpool(get_repository().list, "approval")
+    return [ApprovalRecord.model_validate(value) for value in values]
+
+
 class WorkOrderCompletion(BaseModel):
     completed_items: list[str]
     photo_keys: list[str] = Field(min_length=1)
@@ -166,6 +173,7 @@ async def upload_work_evidence(
 async def complete_work_order(
     work_order_id: str,
     completion: WorkOrderCompletion,
+    http_request: Request,
     _: Annotated[
         Principal,
         Depends(require_roles(Role.FIELD_WORKER, Role.SYSTEM_ADMIN)),
@@ -192,15 +200,26 @@ async def complete_work_order(
     work_order.recovery_confirmed = True
     repository = get_repository()
     await run_in_threadpool(repository.put, "work_order", work_order.id, work_order)
-    incident = await run_in_threadpool(repository.get, "incident", work_order.incident_id)
-    if incident is not None:
-        incident["status"] = "resolved"
-        await run_in_threadpool(
-            repository.put,
-            "incident",
-            work_order.incident_id,
-            incident,
-        )
-        if get_settings().websocket_broker == "redis":
-            await get_realtime_bus().publish("ax-sentinel.incidents", incident)
+    settings = get_settings()
+    if settings.incident_service_url:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.patch(
+                f"{settings.incident_service_url}/api/v1/incidents/"
+                f"{work_order.incident_id}/status",
+                headers={"Authorization": http_request.headers.get("Authorization", "")},
+                json={"status": "resolved"},
+            )
+        response.raise_for_status()
+    else:
+        incident = await run_in_threadpool(repository.get, "incident", work_order.incident_id)
+        if incident is not None:
+            incident["status"] = "resolved"
+            await run_in_threadpool(
+                repository.put,
+                "incident",
+                work_order.incident_id,
+                incident,
+            )
+            if settings.websocket_broker == "redis":
+                await get_realtime_bus().publish("ax-sentinel.incidents", incident)
     return work_order

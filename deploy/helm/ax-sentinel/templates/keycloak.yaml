@@ -7,8 +7,11 @@ metadata:
     {{- include "ax-sentinel.labels" . | nindent 4 }}
 type: Opaque
 stringData:
-  admin-password: {{ .Values.keycloak.adminPassword | quote }}
-  database-password: {{ .Values.keycloak.databasePassword | quote }}
+  admin-password: {{ required "keycloak.adminPassword must be supplied at deploy time" .Values.keycloak.adminPassword | quote }}
+  database-password: {{ required "keycloak.databasePassword must be supplied at deploy time" .Values.keycloak.databasePassword | quote }}
+  system-admin-password: {{ required "keycloak.systemAdminPassword must be supplied at deploy time" .Values.keycloak.systemAdminPassword | quote }}
+  manager-password: {{ required "keycloak.managerPassword must be supplied at deploy time" .Values.keycloak.managerPassword | quote }}
+  worker-password: {{ required "keycloak.workerPassword must be supplied at deploy time" .Values.keycloak.workerPassword | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -135,7 +138,7 @@ spec:
         - name: keycloak
           image: {{ .Values.keycloak.image | quote }}
           imagePullPolicy: IfNotPresent
-          args: ["start-dev", "--import-realm"]
+          args: ["start", "--import-realm"]
           ports:
             - name: http
               containerPort: 8080
@@ -170,6 +173,8 @@ spec:
               value: "true"
             - name: KC_METRICS_ENABLED
               value: "true"
+            - name: KC_CACHE
+              value: local
           readinessProbe:
             tcpSocket:
               port: http
@@ -215,4 +220,108 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "keycloak-user-bootstrap-%d" .Release.Revision }}
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak-user-bootstrap
+        app.kubernetes.io/part-of: ax-sentinel
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: {{ .Values.keycloak.image | quote }}
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              KCADM=/opt/keycloak/bin/kcadm.sh
+              until "$KCADM" config credentials \
+                --server http://keycloak:8080/keycloak \
+                --realm master \
+                --user "$KEYCLOAK_ADMIN" \
+                --password "$KEYCLOAK_ADMIN_PASSWORD"; do
+                sleep 3
+              done
+
+              "$KCADM" update realms/ax-sentinel \
+                -s bruteForceProtected=true \
+                -s eventsEnabled=true \
+                -s eventsExpiration=2592000 \
+                -s adminEventsEnabled=true \
+                -s adminEventsDetailsEnabled=true \
+                -s 'passwordPolicy=length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1) and notUsername(undefined)'
+              client_json=$("$KCADM" get clients -r ax-sentinel \
+                -q clientId=ax-sentinel-web --fields id)
+              client_id=$(printf '%s' "$client_json" | \
+                sed -n 's/.*"id" : "\([^"]*\)".*/\1/p' | head -1)
+              if [ -n "$client_id" ]; then
+                "$KCADM" update "clients/$client_id" -r ax-sentinel \
+                  -s directAccessGrantsEnabled=false
+              fi
+
+              ensure_user() {
+                username="$1"
+                password="$2"
+                role="$3"
+                required_actions="$4"
+                "$KCADM" create users -r ax-sentinel \
+                  -s username="$username" \
+                  -s enabled=true \
+                  -s emailVerified=true >/dev/null 2>&1 || true
+                "$KCADM" set-password -r ax-sentinel \
+                  --username "$username" \
+                  --new-password "$password"
+                "$KCADM" add-roles -r ax-sentinel \
+                  --uusername "$username" \
+                  --rolename "$role" >/dev/null 2>&1 || true
+                user_json=$("$KCADM" get users -r ax-sentinel \
+                  -q exact=true -q username="$username" --fields id)
+                user_id=$(printf '%s' "$user_json" | \
+                  sed -n 's/.*"id" : "\([^"]*\)".*/\1/p' | head -1)
+                if [ -n "$user_id" ]; then
+                  "$KCADM" update "users/$user_id" -r ax-sentinel \
+                    -s "requiredActions=$required_actions"
+                fi
+              }
+
+              ensure_user admin "$SYSTEM_ADMIN_PASSWORD" system_admin \
+                '["CONFIGURE_TOTP"]'
+              ensure_user manager "$MANAGER_PASSWORD" operator_manager '[]'
+              ensure_user worker "$WORKER_PASSWORD" field_worker '[]'
+          env:
+            - name: KEYCLOAK_ADMIN
+              value: {{ .Values.keycloak.adminUsername | quote }}
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-local-credentials
+                  key: admin-password
+            - name: SYSTEM_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-local-credentials
+                  key: system-admin-password
+            - name: MANAGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-local-credentials
+                  key: manager-password
+            - name: WORKER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-local-credentials
+                  key: worker-password
 {{- end }}

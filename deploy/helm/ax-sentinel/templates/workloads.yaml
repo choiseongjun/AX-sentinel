@@ -48,8 +48,20 @@ spec:
               value: {{ $.Values.global.environment | quote }}
             - name: AWS_REGION
               value: {{ $.Values.global.awsRegion | quote }}
+            - name: DYNAMODB_TABLE
+              value: {{ required (printf "table is required for %s" .name) .table | quote }}
             - name: AUTH_MODE
               value: {{ $.Values.global.authMode | quote }}
+            - name: ASSET_SERVICE_URL
+              value: "http://asset-service:8080"
+            - name: INCIDENT_SERVICE_URL
+              value: "http://incident-service:8080"
+            - name: ANALYSIS_SERVICE_URL
+              value: "http://ai-analysis-service:8080"
+            - name: KNOWLEDGE_SERVICE_URL
+              value: "http://knowledge-service:8080"
+            - name: WORK_ORDER_SERVICE_URL
+              value: "http://work-order-service:8080"
             - name: EVENTS_QUEUE
               value: {{ $.Values.global.eventsQueue | quote }}
             - name: EVENTS_DLQ

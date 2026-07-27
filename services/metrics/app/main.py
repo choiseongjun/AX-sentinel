@@ -1,12 +1,15 @@
+import asyncio
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends
+import httpx
+from fastapi import Depends, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
+from shared.config import get_settings
 from shared.dynamodb import get_repository
 
 app = create_app("metrics-service")
@@ -38,12 +41,36 @@ async def record_feedback(
 
 
 @app.get("/api/v1/metrics/summary", tags=["ai-operations"])
-async def metrics_summary() -> dict[str, float | int]:
+async def metrics_summary(http_request: Request) -> dict[str, float | int]:
     repository = get_repository()
     feedback_items = await run_in_threadpool(repository.list, "feedback")
-    analyses = await run_in_threadpool(repository.list, "analysis")
-    approvals = await run_in_threadpool(repository.list, "approval")
-    evaluation_runs = await run_in_threadpool(repository.list, "evaluation_run")
+    settings = get_settings()
+    if settings.analysis_service_url and settings.work_order_service_url:
+        headers = {"Authorization": http_request.headers.get("Authorization", "")}
+        async with httpx.AsyncClient(timeout=15) as client:
+            analyses_response, approvals_response, evaluations_response = await asyncio.gather(
+                client.get(
+                    f"{settings.analysis_service_url}/api/v1/analyses",
+                    headers=headers,
+                ),
+                client.get(
+                    f"{settings.work_order_service_url}/api/v1/approvals",
+                    headers=headers,
+                ),
+                client.get(
+                    f"{settings.analysis_service_url}/api/v1/evaluations/runs",
+                    headers=headers,
+                ),
+            )
+        for response in (analyses_response, approvals_response, evaluations_response):
+            response.raise_for_status()
+        analyses = analyses_response.json()
+        approvals = approvals_response.json()
+        evaluation_runs = evaluations_response.json()
+    else:
+        analyses = await run_in_threadpool(repository.list, "analysis")
+        approvals = await run_in_threadpool(repository.list, "approval")
+        evaluation_runs = await run_in_threadpool(repository.list, "evaluation_run")
     feedback_count = len(feedback_items)
     approved_count = sum(
         item.get("decision") in {"approve", "approve_with_changes"}

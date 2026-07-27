@@ -7,6 +7,11 @@
   "resetPasswordAllowed": true,
   "rememberMe": true,
   "bruteForceProtected": true,
+  "eventsEnabled": true,
+  "eventsExpiration": 2592000,
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true,
+  "passwordPolicy": "length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1) and notUsername(undefined)",
   "roles": {
     "realm": [
       {
@@ -30,7 +35,7 @@
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": true,
-      "directAccessGrantsEnabled": true,
+      "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "protocol": "openid-connect",
       "redirectUris": [
@@ -68,62 +73,6 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
-        }
-      ]
-    }
-  ],
-  "users": [
-    {
-      "username": "admin",
-      "enabled": true,
-      "emailVerified": true,
-      "firstName": "System",
-      "lastName": "Administrator",
-      "email": "admin@axsentinel.local",
-      "realmRoles": [
-        "system_admin"
-      ],
-      "credentials": [
-        {
-          "type": "password",
-          "value": "Admin!2026",
-          "temporary": false
-        }
-      ]
-    },
-    {
-      "username": "manager",
-      "enabled": true,
-      "emailVerified": true,
-      "firstName": "Operations",
-      "lastName": "Manager",
-      "email": "manager@axsentinel.local",
-      "realmRoles": [
-        "operator_manager"
-      ],
-      "credentials": [
-        {
-          "type": "password",
-          "value": "Manager!2026",
-          "temporary": false
-        }
-      ]
-    },
-    {
-      "username": "worker",
-      "enabled": true,
-      "emailVerified": true,
-      "firstName": "Field",
-      "lastName": "Worker",
-      "email": "worker@axsentinel.local",
-      "realmRoles": [
-        "field_worker"
-      ],
-      "credentials": [
-        {
-          "type": "password",
-          "value": "Worker!2026",
-          "temporary": false
         }
       ]
     }

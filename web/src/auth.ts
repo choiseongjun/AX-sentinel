@@ -28,7 +28,9 @@ const userManager = oidcEnabled
       response_type: "code",
       scope: "openid email profile",
       userStore: new WebStorageStateStore({ store: window.sessionStorage }),
-      automaticSilentRenew: false,
+      automaticSilentRenew: true,
+      monitorSession: true,
+      revokeTokensOnSignout: true,
     })
   : null;
 
@@ -59,8 +61,25 @@ export async function signOut() {
 }
 
 export async function getAccessToken() {
-  const user = await userManager?.getUser();
-  return user?.expired ? null : user?.access_token;
+  let user = await userManager?.getUser();
+  if (user?.expired) {
+    try {
+      user = await userManager?.signinSilent();
+    } catch {
+      return null;
+    }
+  }
+  return user?.access_token ?? null;
+}
+
+export function subscribeToSessionEnd(handler: () => void) {
+  if (!userManager) return () => undefined;
+  userManager.events.addAccessTokenExpired(handler);
+  userManager.events.addUserSignedOut(handler);
+  return () => {
+    userManager.events.removeAccessTokenExpired(handler);
+    userManager.events.removeUserSignedOut(handler);
+  };
 }
 
 export function roleFromUser(user: User) {

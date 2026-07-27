@@ -7,13 +7,18 @@
 ## LocalStack EKS Keycloak 로그인
 
 `http://localhost:8081`을 열고 `Keycloak로 로그인`을 누른다. Keycloak
-로그인 화면에서 다음 로컬 개발 계정을 사용한다.
+로그인 화면에서 다음 로컬 개발 계정을 사용한다. 비밀번호는 Git에 저장하지
+않고 `.local/keycloak-credentials.json`에 무작위로 생성한다.
 
-| 역할 | 아이디 | 비밀번호 | 주요 시험 |
+| 역할 | 아이디 | 자격 증명 파일 필드 | 주요 시험 |
 | --- | --- | --- | --- |
-| 시스템 관리자 | `admin` | `Admin!2026` | 전체 메뉴와 관리 기능 |
-| 운영 관리자 | `manager` | `Manager!2026` | AI 분석과 조치안 승인·반려 |
-| 현장 작업자 | `worker` | `Worker!2026` | 작업 체크리스트·증빙·복구 완료 |
+| 시스템 관리자 | `admin` | `systemAdminPassword` | 전체 메뉴와 관리 기능, 첫 로그인 TOTP 등록 |
+| 운영 관리자 | `manager` | `managerPassword` | AI 분석과 조치안 승인·반려 |
+| 현장 작업자 | `worker` | `workerPassword` | 작업 체크리스트·증빙·복구 완료 |
+
+```powershell
+Get-Content .local\keycloak-credentials.json
+```
 
 좌측 하단 사용자 카드를 누르면 Keycloak 로그아웃을 거쳐 다른 역할로 다시
 로그인할 수 있다. 로컬 계정과 비밀번호는 개발 전용이며 운영 환경에서
@@ -44,7 +49,7 @@ kubectl get pods -n ax-sentinel
 ### 운영 관리자
 
 1. <http://localhost:8081>에 접속한다.
-2. `운영 관리자`를 선택하고 `로컬 콘솔 시작`을 누른다.
+2. `Keycloak로 로그인`을 누르고 `manager` 계정으로 로그인한다.
 3. `장애 관리`에서 `가상 이상 발생`을 누른다.
 4. 생성된 장애의 상세 화면으로 이동한다.
 5. `AI 원인 분석 실행`을 누른다.
@@ -111,31 +116,9 @@ Stop-Process -Id <PID>
 
 ## 4. AI 정답 데이터셋 평가
 
-샘플 정비 문서를 등록한다.
-
-```powershell
-curl.exe -F "document_type=manual" `
-  -F "file=@samples/documents/bearing-maintenance.md;type=text/markdown" `
-  http://localhost:8081/api/v1/documents
-```
-
-정답 데이터셋을 등록하고 평가를 실행한다.
-
-```powershell
-$dataset = Get-Content samples/evaluation/ground-truth.json -Raw
-
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8081/api/v1/evaluations/dataset" `
-  -ContentType "application/json; charset=utf-8" `
-  -Body $dataset
-
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8081/api/v1/evaluations/run"
-```
-
-같은 작업은 웹의 `AI 운영 지표` 화면에서 `평가 실행`을 눌러 수행할 수 있다.
+`manager` 또는 `admin`으로 로그인한 뒤 웹의 `문서 관리`에서
+`samples/documents/bearing-maintenance.md`를 등록한다. 이어 `AI 운영 지표`
+화면에서 정답 데이터셋과 평가 실행 기능을 확인한다.
 Ollama 분석은 생성형 모델을 사용하므로 원인 후보 정확도는 실행마다 달라질
 수 있다. 문서 검색 적중률과 해결 시간 감소율은 같은 데이터셋에서 반복
 검증할 수 있다. 결정론적인 회귀 검사가 필요하면 `AI_PROVIDER=mock`으로
@@ -157,29 +140,30 @@ npm --prefix web run build
 - Ruff 결과 `All checks passed!`
 - React/Vite 프로덕션 빌드 성공
 
-## 6. 주요 API 직접 확인
+## 6. 인증과 API 보안 확인
 
 ```powershell
 $base = "http://localhost:8081"
-$tokenResponse = Invoke-RestMethod `
-  -Method Post `
-  -Uri "$base/keycloak/realms/ax-sentinel/protocol/openid-connect/token" `
-  -ContentType "application/x-www-form-urlencoded" `
-  -Body @{
-    grant_type = "password"
-    client_id  = "ax-sentinel-web"
-    username   = "admin"
-    password   = "Admin!2026"
-    scope      = "openid"
-  }
-$headers = @{ Authorization = "Bearer $($tokenResponse.access_token)" }
 
-Invoke-RestMethod "$base/api/v1/incidents" -Headers $headers
-Invoke-RestMethod "$base/api/v1/expert-reviews" -Headers $headers
-Invoke-RestMethod "$base/api/v1/work-orders" -Headers $headers
-Invoke-RestMethod "$base/api/v1/metrics/summary" -Headers $headers
-Invoke-RestMethod "$base/api/v1/events/worker/status" -Headers $headers
+# 인증 없는 업무 API는 401이어야 한다.
+try { Invoke-WebRequest "$base/api/v1/incidents" -UseBasicParsing }
+catch { $_.Exception.Response.StatusCode.value__ }
+
+# public web client의 Password Grant는 400이어야 한다.
+$body = "grant_type=password&client_id=ax-sentinel-web&username=manager&password=invalid"
+try {
+  Invoke-WebRequest `
+    -Method Post `
+    -Uri "$base/keycloak/realms/ax-sentinel/protocol/openid-connect/token" `
+    -ContentType "application/x-www-form-urlencoded" `
+    -Body $body `
+    -UseBasicParsing
+} catch { $_.Exception.Response.StatusCode.value__ }
 ```
+
+인증된 전체 API 흐름은 웹에서 Authorization Code + PKCE로 로그인해
+시험한다. Password Grant는 의도적으로 비활성화되어 있으므로 비밀번호로
+CLI access token을 직접 발급하지 않는다.
 
 ## 7. 실제 AWS Cognito·Bedrock 시험
 

@@ -11,6 +11,8 @@ $ClusterName = "ax-sentinel-local"
 $NodeGroupName = "ax-sentinel-workers"
 $Namespace = "ax-sentinel"
 $Registry = "000000000000.dkr.ecr.us-east-1.localhost.localstack.cloud:4566"
+$LocalStateDirectory = Join-Path $ProjectRoot ".local"
+$KeycloakCredentialFile = Join-Path $LocalStateDirectory "keycloak-credentials.json"
 $OllamaModel = if ($env:OLLAMA_MODEL) {
     $env:OLLAMA_MODEL
 }
@@ -27,6 +29,38 @@ $Services = @(
     "event-worker",
     "web"
 )
+
+function New-LocalPassword {
+    param([string]$Prefix)
+
+    $bytes = New-Object byte[] 18
+    $generator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $generator.GetBytes($bytes)
+    }
+    finally {
+        $generator.Dispose()
+    }
+    $random = [Convert]::ToBase64String($bytes) -replace "[^a-zA-Z0-9]", ""
+    return "${Prefix}!Aa1$random"
+}
+
+function Get-KeycloakCredentials {
+    if (Test-Path -LiteralPath $KeycloakCredentialFile) {
+        return Get-Content -Raw -LiteralPath $KeycloakCredentialFile | ConvertFrom-Json
+    }
+
+    New-Item -ItemType Directory -Path $LocalStateDirectory -Force | Out-Null
+    $credentials = [ordered]@{
+        adminPassword = New-LocalPassword "KeycloakAdmin"
+        databasePassword = New-LocalPassword "KeycloakDb"
+        systemAdminPassword = New-LocalPassword "SystemAdmin"
+        managerPassword = New-LocalPassword "Manager"
+        workerPassword = New-LocalPassword "Worker"
+    }
+    $credentials | ConvertTo-Json | Set-Content -LiteralPath $KeycloakCredentialFile
+    return [pscustomobject]$credentials
+}
 
 function Invoke-Awslocal {
     param([Parameter(ValueFromRemainingArguments)][string[]]$Arguments)
@@ -115,6 +149,21 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "LocalStack Pro failed to start."
     }
+    docker exec axsentinel-localstack `
+        sh /etc/localstack/init/ready.d/10-bootstrap.sh
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to ensure service-owned DynamoDB tables."
+    }
+    $migrationPython = if (Test-Path ".venv\Scripts\python.exe") {
+        ".venv\Scripts\python.exe"
+    }
+    else {
+        "python"
+    }
+    & $migrationPython scripts/migrate-domain-tables.py
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to migrate prototype data into service-owned tables."
+    }
 
     $clusters = Invoke-Awslocal eks list-clusters --query "clusters" --output text
     if ($clusters -notmatch "(^|\s)$([regex]::Escape($ClusterName))(\s|$)") {
@@ -188,12 +237,18 @@ try {
         }
     }
 
+    $keycloakCredentials = Get-KeycloakCredentials
     helm upgrade --install ax-sentinel deploy/helm/ax-sentinel `
         --namespace $Namespace `
         --create-namespace `
         -f deploy/helm/ax-sentinel/values-localstack.yaml `
+        --set-string "keycloak.adminPassword=$($keycloakCredentials.adminPassword)" `
+        --set-string "keycloak.databasePassword=$($keycloakCredentials.databasePassword)" `
+        --set-string "keycloak.systemAdminPassword=$($keycloakCredentials.systemAdminPassword)" `
+        --set-string "keycloak.managerPassword=$($keycloakCredentials.managerPassword)" `
+        --set-string "keycloak.workerPassword=$($keycloakCredentials.workerPassword)" `
         --wait `
-        --timeout 5m
+        --timeout 10m
     if ($LASTEXITCODE -ne 0) {
         throw "Helm deployment failed."
     }
@@ -201,6 +256,7 @@ try {
     Show-Status
     Write-Host ""
     Write-Host "AX Sentinel LocalStack EKS is ready at http://localhost:8081"
+    Write-Host "Local Keycloak credentials: $KeycloakCredentialFile"
 }
 finally {
     Pop-Location

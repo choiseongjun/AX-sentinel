@@ -81,6 +81,14 @@ async def upload_document(
     return document
 
 
+@app.get("/api/v1/documents/by-id/{document_id}", response_model=Document, tags=["documents"])
+async def get_document(document_id: str) -> Document:
+    value = await run_in_threadpool(get_repository().get, "document", document_id)
+    if value is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return Document.model_validate(value)
+
+
 @app.get(
     "/api/v1/documents/search",
     response_model=list[RetrievedChunk],

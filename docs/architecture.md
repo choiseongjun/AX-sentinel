@@ -31,16 +31,18 @@ flowchart LR
 
     IS --> Q["SQS event bus"]
     IS --> N["SNS alerts"]
-    AS --> DB["DynamoDB domain table"]
-    IS --> DB
-    WO --> DB
-    MS --> DB
+    AS --> ADB["Asset DynamoDB"]
+    IS --> IDB["Incident DynamoDB"]
+    AI --> ANDB["Analysis DynamoDB"]
+    KS --> KDB["Knowledge DynamoDB"]
+    WO --> WDB["Work-order DynamoDB"]
+    MS --> MDB["Metrics DynamoDB"]
 
     KS --> S3["S3 manuals / evidence"]
     KS --> KB["Bedrock Knowledge Base"]
     KB --> VS["S3 Vectors index"]
     AI --> RAG["RAG provider"]
-    RAG --> DB
+    RAG --> KS
     RAG --> KB
     AI --> LLM["AI provider"]
     LLM --> OL["Local Ollama"]
@@ -64,16 +66,26 @@ while Pod Identity gives every service a separate least-privilege IAM role.
 
 ## Persistence
 
-The current APIs persist domain records in a shared DynamoDB table using:
+Each API persists records in a service-owned DynamoDB table using:
 
 - `pk`: `<ENTITY_TYPE>#<ENTITY_ID>`
 - `sk`: `METADATA`
 - `entity_type`: filtering discriminator
 - `data`: versionable domain payload
 
-This initial model keeps service deployment independent while using one physical
-table. List APIs currently use filtered scans and must move to entity-specific
-GSIs before production traffic.
+The physical tables are `axsentinel-asset`, `axsentinel-incident`,
+`axsentinel-analysis`, `axsentinel-knowledge`, `axsentinel-work-order`,
+`axsentinel-metrics`, and `axsentinel-events`. List APIs use
+`entity_type-updated_at-index` queries with pagination rather than table scans.
+Conditional writes compare the record `version` so concurrent updates fail
+instead of silently overwriting one another.
+
+Services do not access another service's table. AI analysis obtains equipment,
+maintenance, and documents through Asset and Knowledge REST APIs. Metrics
+collects analyses, evaluations, and approvals through AI Analysis and Work
+Order APIs. Work Order changes incident status through the Incident API. These
+delegated synchronous calls forward the original access token so every receiving
+FastAPI service repeats signature, issuer, audience, expiration, and role checks.
 
 ## Service boundaries
 
@@ -91,6 +103,13 @@ FastAPI validates Keycloak access-token signature, issuer, audience, expiration
 and Realm roles against JWKS. The AWS-compatible mode continues to support
 Cognito groups. Authorization roles are `operator_manager`, `field_worker`, and
 `system_admin`.
+
+Keycloak passwords are generated into the Git-ignored
+`.local/keycloak-credentials.json` file and injected as Kubernetes Secrets at
+deployment. The public client disables Password Grant and requires PKCE S256.
+Brute-force protection, password policy, user/admin event auditing, silent token
+renewal, token revocation, and mandatory TOTP enrollment for the system
+administrator are enabled.
 
 ## Safety state machine
 

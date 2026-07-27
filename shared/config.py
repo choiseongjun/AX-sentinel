@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     oidc_issuer: str | None = None
     oidc_jwks_url: str | None = None
     oidc_client_id: str | None = None
+    asset_service_url: str | None = None
+    incident_service_url: str | None = None
+    analysis_service_url: str | None = None
+    knowledge_service_url: str | None = None
+    work_order_service_url: str | None = None
     ai_provider: str = "mock"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "hoangquan456/qwen3-nothink:4b"

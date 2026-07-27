@@ -52,7 +52,9 @@ services:
       SQS_QUEUE: ${SQS_QUEUE:-axsentinel-events}
       SQS_DLQ: ${SQS_DLQ:-axsentinel-events-dlq}
       SNS_TOPIC: ${SNS_TOPIC:-axsentinel-alerts}
-      DYNAMODB_TABLE: ${DYNAMODB_TABLE:-axsentinel-domain}
+      DYNAMODB_TABLES: >-
+        axsentinel-asset axsentinel-incident axsentinel-analysis
+        axsentinel-knowledge axsentinel-work-order axsentinel-metrics axsentinel-events
       SECRET_NAME: ${SECRET_NAME:-axsentinel/local}
     volumes:
       - localstack-data:/var/lib/localstack
@@ -78,6 +80,9 @@ services:
       context: .
       args:
         SERVICE: asset
+    environment:
+      <<: *app-environment
+      DYNAMODB_TABLE: axsentinel-asset
     ports:
       - "127.0.0.1:8101:8080"
 
@@ -88,6 +93,9 @@ services:
       context: .
       args:
         SERVICE: incident
+    environment:
+      <<: *app-environment
+      DYNAMODB_TABLE: axsentinel-incident
     ports:
       - "127.0.0.1:8102:8080"
 
@@ -98,6 +106,11 @@ services:
       context: .
       args:
         SERVICE: ai_analysis
+    environment:
+      <<: *app-environment
+      DYNAMODB_TABLE: axsentinel-analysis
+      ASSET_SERVICE_URL: http://asset-service:8080
+      KNOWLEDGE_SERVICE_URL: http://knowledge-service:8080
     ports:
       - "127.0.0.1:8103:8080"
 
@@ -108,6 +121,9 @@ services:
       context: .
       args:
         SERVICE: knowledge
+    environment:
+      <<: *app-environment
+      DYNAMODB_TABLE: axsentinel-knowledge
     ports:
       - "127.0.0.1:8104:8080"
 
@@ -118,6 +134,10 @@ services:
       context: .
       args:
         SERVICE: work_order
+    environment:
+      <<: *app-environment
+      DYNAMODB_TABLE: axsentinel-work-order
+      INCIDENT_SERVICE_URL: http://incident-service:8080
     ports:
       - "127.0.0.1:8105:8080"
 
@@ -128,6 +148,11 @@ services:
       context: .
       args:
         SERVICE: metrics
+    environment:
+      <<: *app-environment
+      DYNAMODB_TABLE: axsentinel-metrics
+      ANALYSIS_SERVICE_URL: http://ai-analysis-service:8080
+      WORK_ORDER_SERVICE_URL: http://work-order-service:8080
     ports:
       - "127.0.0.1:8106:8080"
 
@@ -138,6 +163,9 @@ services:
       context: .
       args:
         SERVICE: event_worker
+    environment:
+      <<: *app-environment
+      DYNAMODB_TABLE: axsentinel-events
     ports:
       - "127.0.0.1:8107:8080"
 

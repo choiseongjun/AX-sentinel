@@ -23,36 +23,43 @@ global:
 services:
   - name: asset-service
     image: axsentinel/asset-service
+    table: axsentinel-asset
     port: 8080
     replicas: 1
     path: /api/v1/equipment
   - name: incident-service
     image: axsentinel/incident-service
+    table: axsentinel-incident
     port: 8080
     replicas: 1
     path: /api/v1/incidents
   - name: ai-analysis-service
     image: axsentinel/ai-analysis-service
+    table: axsentinel-analysis
     port: 8080
     replicas: 1
     path: /api/v1/analyses
   - name: knowledge-service
     image: axsentinel/knowledge-service
+    table: axsentinel-knowledge
     port: 8080
     replicas: 1
     path: /api/v1/documents
   - name: work-order-service
     image: axsentinel/work-order-service
+    table: axsentinel-work-order
     port: 8080
     replicas: 1
     path: /api/v1/approvals
   - name: metrics-service
     image: axsentinel/metrics-service
+    table: axsentinel-metrics
     port: 8080
     replicas: 1
     path: /api/v1/metrics
   - name: event-worker
     image: axsentinel/event-worker
+    table: axsentinel-events
     port: 8080
     replicas: 1
     path: /api/v1/events
@@ -79,8 +86,11 @@ keycloak:
   image: quay.io/keycloak/keycloak:26.7.0
   postgresImage: postgres:17-alpine
   adminUsername: keycloak-admin
-  adminPassword: KeycloakAdmin!2026
-  databasePassword: KeycloakDb!2026
+  adminPassword: ""
+  databasePassword: ""
+  systemAdminPassword: ""
+  managerPassword: ""
+  workerPassword: ""
   databaseStorage: 2Gi
   realm: ax-sentinel
   clientId: ax-sentinel-web

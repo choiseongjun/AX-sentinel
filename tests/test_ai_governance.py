@@ -40,7 +40,7 @@ def audit() -> main.AnalysisAudit:
 def test_high_risk_analysis_creates_auditable_expert_review(monkeypatch) -> None:
     repository = MemoryRepository()
 
-    async def generated(_request):
+    async def generated(_request, _authorization=None):
         return (
             {
                 "risk_level": "high",

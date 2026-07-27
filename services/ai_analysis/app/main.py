@@ -3,7 +3,8 @@ from enum import StrEnum
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import Depends, HTTPException, Query, status
+import httpx
+from fastapi import Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -143,21 +144,41 @@ class EvaluationRun(BaseModel):
 
 async def _analysis_context(
     request: AnalysisRequest,
+    authorization: str | None = None,
 ) -> tuple[dict[str, Any], list[RetrievedChunk], list[str], dict[str, str]]:
     retrieval_query = f"{request.sensor_summary}\n{request.log_summary}"
     retrieved_chunks = await run_in_threadpool(
         get_retriever().retrieve,
         retrieval_query,
         5,
+        authorization,
     )
     repository = get_repository()
-    equipment = await run_in_threadpool(repository.get, "equipment", request.equipment_id)
-    maintenance_values = await run_in_threadpool(repository.list, "maintenance")
-    maintenance_history = [
-        value
-        for value in maintenance_values
-        if value.get("equipment_id") == request.equipment_id
-    ]
+    settings = get_settings()
+    if settings.asset_service_url:
+        headers = {"Authorization": authorization} if authorization else {}
+        async with httpx.AsyncClient(timeout=15) as client:
+            equipment_response = await client.get(
+                f"{settings.asset_service_url}/api/v1/equipment/{request.equipment_id}",
+                headers=headers,
+            )
+            equipment_response.raise_for_status()
+            maintenance_response = await client.get(
+                f"{settings.asset_service_url}/api/v1/equipment/"
+                f"{request.equipment_id}/maintenance",
+                headers=headers,
+            )
+            maintenance_response.raise_for_status()
+        equipment = equipment_response.json()
+        maintenance_history = maintenance_response.json()
+    else:
+        equipment = await run_in_threadpool(repository.get, "equipment", request.equipment_id)
+        maintenance_values = await run_in_threadpool(repository.list, "maintenance")
+        maintenance_history = [
+            value
+            for value in maintenance_values
+            if value.get("equipment_id") == request.equipment_id
+        ]
     related_document_ids = list(
         dict.fromkeys(
             request.related_document_ids
@@ -171,7 +192,17 @@ async def _analysis_context(
     for document_id in related_document_ids:
         if document_id in document_versions:
             continue
-        document = await run_in_threadpool(repository.get, "document", document_id)
+        if settings.knowledge_service_url:
+            headers = {"Authorization": authorization} if authorization else {}
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(
+                    f"{settings.knowledge_service_url}/api/v1/documents/"
+                    f"by-id/{document_id}",
+                    headers=headers,
+                )
+            document = response.json() if response.status_code == 200 else None
+        else:
+            document = await run_in_threadpool(repository.get, "document", document_id)
         document_versions[document_id] = (
             str(document.get("version", "unknown")) if document else "unknown"
         )
@@ -186,8 +217,12 @@ async def _analysis_context(
 
 async def _generate(
     request: AnalysisRequest,
+    authorization: str | None = None,
 ) -> tuple[dict[str, Any], list[RetrievedChunk], list[str], AnalysisAudit]:
-    evidence, chunks, related_document_ids, document_versions = await _analysis_context(request)
+    evidence, chunks, related_document_ids, document_versions = await _analysis_context(
+        request,
+        authorization,
+    )
     generated = await run_in_threadpool(get_analysis_engine().analyze, evidence)
     engine_audit = generated.pop("_audit", {})
     settings = get_settings()
@@ -212,12 +247,16 @@ async def _generate(
 @app.post("/api/v1/analyses", response_model=AnalysisResult, tags=["analysis"])
 async def analyze_incident(
     request: AnalysisRequest,
+    http_request: Request,
     _: Annotated[
         Principal,
         Depends(require_roles(Role.OPERATOR_MANAGER, Role.SYSTEM_ADMIN)),
     ],
 ) -> AnalysisResult:
-    generated, _, related_document_ids, audit = await _generate(request)
+    generated, _, related_document_ids, audit = await _generate(
+        request,
+        http_request.headers.get("Authorization"),
+    )
     confidence = generated["confidence"]
     risk_level = RiskLevel(generated["risk_level"])
     decision = evaluate_review_policy(
@@ -266,6 +305,12 @@ async def get_analysis(analysis_id: str) -> AnalysisResult:
     if value is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
     return AnalysisResult.model_validate(value)
+
+
+@app.get("/api/v1/analyses", response_model=list[AnalysisResult], tags=["analysis"])
+async def list_analyses() -> list[AnalysisResult]:
+    values = await run_in_threadpool(get_repository().list, "analysis")
+    return [AnalysisResult.model_validate(value) for value in values]
 
 
 @app.get("/api/v1/expert-reviews", response_model=list[ExpertReviewCase], tags=["review"])
@@ -369,6 +414,7 @@ def _document_hit_rate(
 
 @app.post("/api/v1/evaluations/run", response_model=EvaluationRun, tags=["evaluation"])
 async def run_evaluation(
+    http_request: Request,
     _: Annotated[
         Principal,
         Depends(require_roles(Role.OPERATOR_MANAGER, Role.SYSTEM_ADMIN)),
@@ -388,7 +434,10 @@ async def run_evaluation(
             sensor_summary=case.sensor_summary,
             log_summary=case.log_summary,
         )
-        generated, chunks, _, audit = await _generate(request)
+        generated, chunks, _, audit = await _generate(
+            request,
+            http_request.headers.get("Authorization"),
+        )
         run_audit = audit
         results.append(
             EvaluationCaseResult(

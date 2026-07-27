@@ -24,3 +24,4 @@ web/vite.config.d.ts
 *.tfvars
 !*.tfvars.example
 crash.log
+.local/
