@@ -24,7 +24,7 @@ AI는 설비를 직접 조작하지 않습니다. 분석 결과는 운영 관리
 - 관리자 승인·수정 승인·반려, 작업 티켓, 증빙 사진과 복구 확인
 - AI 분석 정확도 및 조치안 유용성 피드백
 - 서비스별 Prometheus HTTP 메트릭
-- Amazon Cognito OIDC 인증과 역할 기반 권한 제어
+- OIDC 인증과 역할 기반 권한 제어(현재 Cognito 호환, 목표 Keycloak)
 - Docker Compose 및 LocalStack 로컬 개발 환경
 - Terraform 기반 AWS VPC, EKS, ECR, Cognito, DynamoDB, S3와 Bedrock 구성
 - Helm 기반 Kubernetes 배포, HPA, PDB, NetworkPolicy와 ALB Ingress
@@ -127,8 +127,9 @@ AI 도입 효과는 단순 답변 생성 건수가 아니라 장애 대응 결�
 | 현장 작업자 | 작업 티켓 수행, 체크리스트·사진·메모·실제 원인 등록 |
 | 시스템 관리자 | 사용자·문서·AI 운영 설정 및 전체 관리 |
 
-운영 환경의 Cognito 그룹명은 각각 `operator_manager`, `field_worker`,
-`system_admin`입니다.
+역할명은 `operator_manager`, `field_worker`, `system_admin`입니다. 현재
+구현은 Cognito group claim을 사용하고, 목표 구조에서는 같은 역할을
+Keycloak Realm role로 관리합니다.
 
 ## 업무 흐름
 
@@ -215,11 +216,11 @@ EC2 Managed Node Group은 Pod가 공유하는 컴퓨팅 기반입니다.
 | AI | 로컬 Ollama, Amazon Bedrock Converse API, 선택적 Bedrock Guardrail |
 | RAG | Amazon Bedrock Knowledge Bases, S3 Vectors, Amazon S3 |
 | Data | Amazon DynamoDB single-table, S3, SQS, SNS, Redis Pub/Sub |
-| Auth | Amazon Cognito, OIDC Authorization Code + PKCE, JWT/JWKS |
+| Auth | 현재: Amazon Cognito 호환 / 목표: Keycloak OIDC + PKCE, JWT/JWKS |
 | Local | Docker Compose, LocalStack Pro, LocalStack EKS |
 | Platform | Amazon EKS, ECR, VPC, Pod Identity |
 | IaC | Terraform, Helm, Kubernetes |
-| Observability | Prometheus exposition endpoint, Kubernetes probes |
+| Observability | 현재: Prometheus endpoint·Kubernetes probe / 목표: EFK·OpenTelemetry |
 | Quality | pytest, Ruff, TypeScript compiler, Vite build |
 
 ## 서비스
@@ -641,8 +642,11 @@ Invoke-RestMethod -Method Post `
 
 ## 인증과 권한
 
-웹은 Cognito Authorization Code + PKCE 흐름으로 로그인합니다. FastAPI
-미들웨어는 access token에 대해 다음 항목을 확인합니다.
+### 현재 구현
+
+현재 실행 코드는 Cognito Authorization Code + PKCE 흐름과 비활성 로컬 인증
+모드를 지원합니다. FastAPI 미들웨어는 Cognito access token에 대해 다음
+항목을 확인합니다.
 
 - JWKS 기반 RS256 서명
 - Cognito issuer
@@ -652,6 +656,18 @@ Invoke-RestMethod -Method Post `
 
 고위험 API는 FastAPI dependency로 역할을 다시 검사하므로 웹 화면을 우회해
 직접 호출하더라도 동일한 권한 정책이 적용됩니다.
+
+### 목표 구조: Keycloak
+
+목표 MSA 구조에서는 Cognito를 Keycloak으로 교체합니다. React는 Keycloak
+Authorization Code + PKCE `S256`으로 로그인하고 FastAPI는 JWKS 서명,
+issuer, audience, 만료 시간과 Realm role을 검증합니다. 서비스 간 호출은
+서비스별 confidential client와 Client Credentials를 사용합니다.
+
+Keycloak realm/client/role, 서비스 계정과 EFK 로그 설계는
+[Keycloak 인증 및 EFK 중앙 로그 설계](docs/keycloak-efk-design.md)를
+참조합니다. 이 설계가 실제 실행 환경에 적용되려면 Keycloak 배포, 공통 OIDC
+verifier 변경과 React 로그인 전환 작업이 추가로 필요합니다.
 
 ## 저장 구조
 
