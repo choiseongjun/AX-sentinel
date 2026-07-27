@@ -14,6 +14,7 @@ global:
   kafkaBootstrapServers: kafka:9092
   kafkaConsumerGroup: ax-sentinel-event-worker-v1
   kafkaPublishTimeoutSeconds: 10
+  kafkaMaxProcessingAttempts: 3
   alertsTopic: axsentinel-alerts
   websocketBroker: redis
   redisUrl: redis://redis:6379/0
@@ -105,3 +106,9 @@ kafka:
   enabled: true
   image: apache/kafka:3.9.1
   storage: 5Gi
+  ui:
+    enabled: true
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    username: admin
+    password: ""
+    contextPath: /kafka-ui

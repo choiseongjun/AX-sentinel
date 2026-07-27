@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronRight,
   ClipboardCheck,
+  Database,
   Factory,
   FileSearch,
   Gauge,
@@ -386,6 +387,12 @@ function App() {
               )}
             </button>
           ))}
+          <button
+            className="nav-item"
+            onClick={() => window.open("/kafka-ui", "_blank", "noopener,noreferrer")}
+          >
+            <Database size={19} /> Kafka 관리
+          </button>
         </nav>
         <div className="system-card">
           <div><span className="status-dot" /> 시스템 정상</div>

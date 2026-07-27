@@ -34,6 +34,26 @@ class FakeSqs:
         self.deleted.append(kwargs)
 
 
+class FakeKafkaFuture:
+    def get(self, timeout: int) -> None:
+        assert timeout == 10
+
+
+class FakeKafkaProducer:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str, dict[str, Any]]] = []
+
+    def send(
+        self,
+        topic: str,
+        *,
+        key: str,
+        value: dict[str, Any],
+    ) -> FakeKafkaFuture:
+        self.messages.append((topic, key, value))
+        return FakeKafkaFuture()
+
+
 def sqs_message(body: str) -> dict[str, Any]:
     return {
         "MessageId": "message-1",
@@ -128,3 +148,38 @@ def test_kafka_worker_persists_envelope_with_offset() -> None:
     assert processed.broker == "kafka"
     assert processed.partition == 2
     assert processed.offset == 41
+
+
+def test_kafka_worker_moves_invalid_envelope_to_dlq_after_three_attempts() -> None:
+    repository = MemoryRepository()
+    producer = FakeKafkaProducer()
+    worker = KafkaEventWorker(
+        repository=repository,  # type: ignore[arg-type]
+        bootstrap_servers="unused:9092",
+        consumer_group="test-group",
+        max_processing_attempts=3,
+    )
+    worker._dlq_producer = producer  # type: ignore[assignment]
+    record = type(
+        "Record",
+        (),
+        {
+            "key": b"invalid-1",
+            "value": {"unexpected": "payload"},
+            "topic": "ax.audit.events.v1",
+            "partition": 0,
+            "offset": 7,
+        },
+    )()
+
+    assert asyncio.run(worker.process_record_with_retry(record)) is False
+    assert asyncio.run(worker.process_record_with_retry(record)) is False
+    assert asyncio.run(worker.process_record_with_retry(record)) is True
+
+    assert len(producer.messages) == 1
+    topic, key, message = producer.messages[0]
+    assert topic == "ax.events.dlq.v1"
+    assert key == "dlq-ax.audit.events.v1-0-7"
+    assert message["payload"]["attempts"] == 3
+    assert message["payload"]["original_value"] == {"unexpected": "payload"}
+    assert repository.items[-1][2].result == "dead_lettered"

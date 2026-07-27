@@ -47,7 +47,13 @@ function New-LocalPassword {
 
 function Get-KeycloakCredentials {
     if (Test-Path -LiteralPath $KeycloakCredentialFile) {
-        return Get-Content -Raw -LiteralPath $KeycloakCredentialFile | ConvertFrom-Json
+        $credentials = Get-Content -Raw -LiteralPath $KeycloakCredentialFile | ConvertFrom-Json
+        if (-not $credentials.PSObject.Properties["kafkaUiPassword"]) {
+            $credentials | Add-Member -NotePropertyName "kafkaUiPassword" `
+                -NotePropertyValue (New-LocalPassword "KafkaUi")
+            $credentials | ConvertTo-Json | Set-Content -LiteralPath $KeycloakCredentialFile
+        }
+        return $credentials
     }
 
     New-Item -ItemType Directory -Path $LocalStateDirectory -Force | Out-Null
@@ -57,6 +63,7 @@ function Get-KeycloakCredentials {
         systemAdminPassword = New-LocalPassword "SystemAdmin"
         managerPassword = New-LocalPassword "Manager"
         workerPassword = New-LocalPassword "Worker"
+        kafkaUiPassword = New-LocalPassword "KafkaUi"
     }
     $credentials | ConvertTo-Json | Set-Content -LiteralPath $KeycloakCredentialFile
     return [pscustomobject]$credentials
@@ -247,6 +254,7 @@ try {
         --set-string "keycloak.systemAdminPassword=$($keycloakCredentials.systemAdminPassword)" `
         --set-string "keycloak.managerPassword=$($keycloakCredentials.managerPassword)" `
         --set-string "keycloak.workerPassword=$($keycloakCredentials.workerPassword)" `
+        --set-string "kafka.ui.password=$($keycloakCredentials.kafkaUiPassword)" `
         --wait `
         --timeout 10m
     if ($LASTEXITCODE -ne 0) {

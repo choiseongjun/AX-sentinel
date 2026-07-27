@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     kafka_bootstrap_servers: str = "kafka:9092"
     kafka_consumer_group: str = "ax-sentinel-event-worker-v1"
     kafka_publish_timeout_seconds: float = 10
+    kafka_max_processing_attempts: int = 3
     alerts_topic: str = "axsentinel-alerts"
     websocket_broker: str = "memory"
     redis_url: str | None = None

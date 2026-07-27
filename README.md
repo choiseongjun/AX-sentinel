@@ -363,6 +363,16 @@ kubectl get pods -n ax-sentinel
 http://localhost:8081
 ```
 
+좌측 메뉴의 `Kafka 관리`를 누르면 인증이 적용된 Kafbat UI가 새 탭으로
+열립니다. 토픽 메시지, partition/offset, consumer group lag와 DLQ를
+브라우저에서 확인할 수 있습니다.
+
+```text
+http://localhost:8081/kafka-ui
+사용자명: admin
+비밀번호: .local/keycloak-credentials.json의 kafkaUiPassword
+```
+
 Docker Compose 웹(`http://localhost:3000`)과 포트를 분리했으므로 두 환경을
 동시에 비교할 수 있습니다. 애플리케이션 데이터 리전은
 `ap-northeast-2`를 유지합니다. LocalStack ECR 주소만 로컬 TLS 인증서와
@@ -732,8 +742,9 @@ LocalStack 시작 시 다음 리소스가 자동 생성됩니다.
 - DynamoDB tables: `axsentinel-asset`, `axsentinel-incident`,
   `axsentinel-analysis`, `axsentinel-knowledge`, `axsentinel-work-order`,
   `axsentinel-metrics`, `axsentinel-events`
-- Kafka StatefulSet와 7개 토픽: telemetry, incident, analysis, knowledge,
-  work-order, feedback, audit
+- Kafka StatefulSet와 8개 토픽: telemetry, incident, analysis, knowledge,
+  work-order, feedback, audit, DLQ
+- 로그인 보호가 적용된 Kafbat UI: 토픽 메시지, offset, consumer lag, DLQ 조회
 - SQS queue: `axsentinel-events`
 - SQS dead-letter queue: `axsentinel-events-dlq`
 - SNS topic: `axsentinel-alerts`

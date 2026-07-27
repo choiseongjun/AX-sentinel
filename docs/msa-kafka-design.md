@@ -13,15 +13,19 @@
 - 메시지 중복, 순서 변경, 재처리와 장애 복구를 기본 전제로 설계한다.
 - AI는 진단을 지원하지만 설비 제어와 고위험 조치를 직접 실행하지 않는다.
 
-현재 LocalStack EKS에는 단일 노드 KRaft Kafka, 7개 도메인 토픽, 공통
+현재 LocalStack EKS에는 단일 노드 KRaft Kafka, 7개 도메인 토픽과 DLQ, 공통
 versioned envelope, FastAPI producer와 Event Worker consumer group이
 구현되어 있다. 센서 수신, 장애 감지·상태 변경, AI 분석 완료, 문서 등록,
 승인·작업 완료와 피드백 이벤트가 실제 broker를 통과한다. Event Worker는
 `event_id` 중복을 차단하고 topic·partition·offset 처리 이력을 DynamoDB에
 저장한 후 offset을 commit한다.
 
+처리 실패는 같은 offset을 최대 3회 재시도한 뒤 `ax.events.dlq.v1`로
+격리한다. Kafbat UI에서 토픽 메시지, consumer lag와 DLQ 원문을 조회할 수
+있다.
+
 아직 구현되지 않은 목표는 Transactional Outbox, Schema Registry, Kafka
-기반 AI 비동기 명령, 전용 Realtime Gateway, DLQ 토픽과 운영 MSK
+기반 AI 비동기 명령, 전용 Realtime Gateway와 운영 MSK
 전환이다. 아래 내용은 현재 구현과 이 확장 목표를 함께 설명한다.
 
 ## 2. 핵심 결정
@@ -320,10 +324,13 @@ Topic 이름은 `<platform>.<domain>.<stream>.v<major>` 형식을 사용한다.
 | `ax.work-order.events.v1` | `incident_id` | Work Order | Incident, Realtime, Metrics | 365일 |
 | `ax.feedback.events.v1` | `analysis_id` | Metrics | Evaluation pipeline | 365일 |
 | `ax.audit.events.v1` | `actor_id` | 모든 서비스 | Audit sink | 정책에 따라 장기 보관 |
+| `ax.events.dlq.v1` | source topic/partition/offset | Event Worker | Kafbat UI, 운영자 | 수동 검토 후 삭제 |
 
 ### Retry와 DLQ
 
-각 domain topic은 공통 retry/DLQ 규칙을 사용한다.
+현재 Event Worker는 처리 실패 offset으로 `seek`하여 최대 3회 재시도하고,
+계속 실패하면 공통 `ax.events.dlq.v1`에 원문과 오류 정보를 보존한 뒤
+offset을 commit한다. 아래 retry topic 체계는 운영 확장 목표다.
 
 ```text
 ax.analysis.commands.v1
@@ -332,7 +339,7 @@ ax.analysis.commands.v1
   → ax.analysis.commands.dlq.v1
 ```
 
-- 역직렬화 실패, schema 위반은 즉시 DLQ로 이동한다.
+- 역직렬화 실패와 schema 위반은 현재 최대 3회 확인 후 DLQ로 이동한다.
 - 일시적인 네트워크 오류는 지수 backoff retry topic으로 이동한다.
 - 업무 규칙 위반은 재시도하지 않고 실패 이벤트를 발행한다.
 - DLQ 재처리는 관리자 API에서 대상 `event_id`를 지정해 수행한다.

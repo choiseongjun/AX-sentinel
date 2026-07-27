@@ -127,7 +127,20 @@ Ollama 분석은 생성형 모델을 사용하므로 원인 후보 정확도는 
 ## 5. Kafka 이벤트 흐름 확인
 
 LocalStack EKS에서는 센서·장애·분석·문서·승인·작업·피드백 상태 변화가
-Kafka로 발행된다. 먼저 broker와 토픽을 확인한다.
+Kafka로 발행된다. 가장 빠른 확인 방법은 AX Sentinel 좌측 메뉴의
+`Kafka 관리`를 누르는 것이다. 새 탭에서 다음 자격 증명으로 로그인한다.
+
+| 항목 | 값 |
+| --- | --- |
+| 주소 | <http://localhost:8081/kafka-ui> |
+| 사용자명 | `admin` |
+| 비밀번호 | `.local/keycloak-credentials.json`의 `kafkaUiPassword` |
+
+`Topics`에서는 메시지 수, partition, offset과 payload를 보고, `Consumers`에서는
+`ax-sentinel-event-worker-v1`의 lag를 확인한다. 실패 이벤트는
+`Topics → ax.events.dlq.v1 → Messages`에서 확인한다.
+
+CLI로 확인하려면 먼저 broker와 토픽을 조회한다.
 
 ```powershell
 kubectl get statefulset kafka -n ax-sentinel
@@ -154,6 +167,23 @@ kubectl exec -n ax-sentinel kafka-0 -- `
 처리하고 commit한 상태다. 처리 이력은 `axsentinel-events` DynamoDB
 테이블에 `event_id`, `event_type`, `topic`, `partition`, `offset`,
 `producer`, `correlation_id`와 함께 저장된다.
+
+### DLQ 동작 시험
+
+다음처럼 envelope schema가 잘못된 JSON을 넣으면 Event Worker가 같은 offset을
+3회 처리한 뒤 `ax.events.dlq.v1`로 격리하고 원본 offset을 commit한다.
+
+```powershell
+$invalidEvent = '{"unexpected":"payload","test_id":"manual-dlq-check"}'
+$invalidEvent | kubectl exec -i -n ax-sentinel kafka-0 -- `
+  /opt/kafka/bin/kafka-console-producer.sh `
+  --bootstrap-server kafka:9092 `
+  --topic ax.audit.events.v1
+```
+
+Kafka UI의 DLQ 메시지에는 `source_topic`, `source_partition`,
+`source_offset`, `original_value`, `error_type`, `error_message`,
+`attempts=3`이 표시된다.
 
 ## 6. 자동화 테스트
 

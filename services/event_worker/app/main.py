@@ -4,10 +4,11 @@ import logging
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Annotated, Any, Protocol
+from uuid import uuid4
 
 import boto3
 from fastapi import Depends, Query
-from kafka import KafkaConsumer
+from kafka import KafkaConsumer, KafkaProducer, TopicPartition
 from prometheus_client import Counter
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
@@ -16,7 +17,7 @@ from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
 from shared.config import get_settings
 from shared.dynamodb import DynamoRepository, get_repository
-from shared.events import KAFKA_TOPICS, EventEnvelope
+from shared.events import KAFKA_DLQ_TOPIC, KAFKA_TOPICS, EventEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -230,12 +231,16 @@ class KafkaEventWorker:
         bootstrap_servers: str,
         consumer_group: str,
         topics: tuple[str, ...] = KAFKA_TOPICS,
+        max_processing_attempts: int = 3,
     ) -> None:
         self._repository = repository
         self._bootstrap_servers = bootstrap_servers
         self._consumer_group = consumer_group
         self._topics = topics
+        self._max_processing_attempts = max(1, max_processing_attempts)
         self._consumer: KafkaConsumer | None = None
+        self._dlq_producer: KafkaProducer | None = None
+        self._attempts: dict[tuple[str, int, int], int] = {}
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
 
@@ -254,8 +259,25 @@ class KafkaEventWorker:
             value_deserializer=lambda value: json.loads(value.decode("utf-8")),
         )
 
+    def _create_dlq_producer(self) -> KafkaProducer:
+        return KafkaProducer(
+            bootstrap_servers=self._bootstrap_servers,
+            client_id="ax-sentinel-event-worker-dlq",
+            acks="all",
+            retries=5,
+            max_in_flight_requests_per_connection=1,
+            value_serializer=lambda value: json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8"),
+            key_serializer=lambda value: value.encode("utf-8"),
+        )
+
     async def start(self) -> None:
         self._consumer = await run_in_threadpool(self._create_consumer)
+        self._dlq_producer = await run_in_threadpool(self._create_dlq_producer)
         self._stopping.clear()
         self._task = asyncio.create_task(self._poll(), name="kafka-domain-event-worker")
 
@@ -269,6 +291,9 @@ class KafkaEventWorker:
         if self._consumer is not None:
             await run_in_threadpool(self._consumer.close)
             self._consumer = None
+        if self._dlq_producer is not None:
+            await run_in_threadpool(self._dlq_producer.close)
+            self._dlq_producer = None
 
     def _required_consumer(self) -> KafkaConsumer:
         if self._consumer is None:
@@ -277,6 +302,12 @@ class KafkaEventWorker:
 
     def _poll_records(self) -> dict[Any, list[Any]]:
         return self._required_consumer().poll(timeout_ms=1000, max_records=100)
+
+    def _seek_to_record(self, record: Any) -> None:
+        self._required_consumer().seek(
+            TopicPartition(record.topic, record.partition),
+            record.offset,
+        )
 
     async def process_record(self, record: Any) -> None:
         envelope = EventEnvelope.model_validate(record.value)
@@ -308,6 +339,98 @@ class KafkaEventWorker:
             )
         EVENTS_PROCESSED.labels("kafka", envelope.event_type, result).inc()
 
+    def _publish_dead_letter(self, key: str, value: dict[str, Any]) -> None:
+        if self._dlq_producer is None:
+            raise RuntimeError("Kafka DLQ producer has not started")
+        self._dlq_producer.send(KAFKA_DLQ_TOPIC, key=key, value=value).get(timeout=10)
+
+    async def _dead_letter(
+        self,
+        record: Any,
+        error: Exception,
+        attempts: int,
+    ) -> None:
+        original = record.value
+        original_envelope = original if isinstance(original, dict) else {}
+        dead_letter_id = f"dlq-{record.topic}-{record.partition}-{record.offset}"
+        message = EventEnvelope(
+            event_id=str(uuid4()),
+            event_type="event.processing_failed",
+            producer="event-worker",
+            correlation_id=str(
+                original_envelope.get("correlation_id") or uuid4()
+            ),
+            causation_id=original_envelope.get("event_id"),
+            payload={
+                "source_topic": record.topic,
+                "source_partition": record.partition,
+                "source_offset": record.offset,
+                "original_key": (
+                    record.key.decode("utf-8", errors="replace")
+                    if isinstance(getattr(record, "key", None), bytes)
+                    else getattr(record, "key", None)
+                ),
+                "original_value": original,
+                "error_type": type(error).__name__,
+                "error_message": str(error)[:1000],
+                "attempts": attempts,
+            },
+        ).model_dump(mode="json")
+        await run_in_threadpool(self._publish_dead_letter, dead_letter_id, message)
+        processed = ProcessedEvent(
+            id=dead_letter_id,
+            event_type="event.processing_failed",
+            result="dead_lettered",
+            payload=message["payload"],
+            receive_count=attempts,
+            processed_at=datetime.now(UTC),
+            broker="kafka",
+            topic=record.topic,
+            partition=record.partition,
+            offset=record.offset,
+            producer="event-worker",
+            correlation_id=message["correlation_id"],
+        )
+        await run_in_threadpool(
+            self._repository.put,
+            "processed_event",
+            dead_letter_id,
+            processed,
+        )
+        EVENTS_PROCESSED.labels(
+            "kafka",
+            "event.processing_failed",
+            "dead_lettered",
+        ).inc()
+
+    async def process_record_with_retry(self, record: Any) -> bool:
+        record_key = (record.topic, record.partition, record.offset)
+        try:
+            await self.process_record(record)
+            self._attempts.pop(record_key, None)
+            return True
+        except Exception as exc:
+            attempts = self._attempts.get(record_key, 0) + 1
+            self._attempts[record_key] = attempts
+            EVENTS_FAILED.labels("kafka", "processing_error").inc()
+            if attempts < self._max_processing_attempts:
+                logger.warning(
+                    "Kafka event processing failed (%d/%d), offset not committed: %s",
+                    attempts,
+                    self._max_processing_attempts,
+                    exc,
+                )
+                return False
+            await self._dead_letter(record, exc, attempts)
+            self._attempts.pop(record_key, None)
+            logger.error(
+                "Kafka event moved to %s after %d attempts: %s",
+                KAFKA_DLQ_TOPIC,
+                attempts,
+                exc,
+            )
+            return True
+
     async def status(self) -> WorkerStatus:
         return WorkerStatus(
             running=self.running,
@@ -321,12 +444,19 @@ class KafkaEventWorker:
             try:
                 batches = await run_in_threadpool(self._poll_records)
                 processed_any = False
+                batch_failed = False
                 for records in batches.values():
                     for record in records:
-                        await self.process_record(record)
+                        handled = await self.process_record_with_retry(record)
+                        if not handled:
+                            await run_in_threadpool(self._seek_to_record, record)
+                            batch_failed = True
+                            break
                         processed_any = True
-                if processed_any:
+                if processed_any and not batch_failed:
                     await run_in_threadpool(self._required_consumer().commit)
+                elif batch_failed:
+                    await asyncio.sleep(1)
             except asyncio.CancelledError:
                 raise
             except (ValueError, ValidationError) as exc:
@@ -345,6 +475,7 @@ if settings.event_bus in {"kafka", "dual"}:
         repository=get_repository(),
         bootstrap_servers=settings.kafka_bootstrap_servers,
         consumer_group=settings.kafka_consumer_group,
+        max_processing_attempts=settings.kafka_max_processing_attempts,
     )
 else:
     event_worker = EventWorker(

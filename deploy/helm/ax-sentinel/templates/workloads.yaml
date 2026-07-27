@@ -79,6 +79,8 @@ spec:
               value: {{ $.Values.global.kafkaConsumerGroup | quote }}
             - name: KAFKA_PUBLISH_TIMEOUT_SECONDS
               value: {{ $.Values.global.kafkaPublishTimeoutSeconds | quote }}
+            - name: KAFKA_MAX_PROCESSING_ATTEMPTS
+              value: {{ $.Values.global.kafkaMaxProcessingAttempts | quote }}
             {{- end }}
             - name: ALERTS_TOPIC
               value: {{ $.Values.global.alertsTopic | quote }}

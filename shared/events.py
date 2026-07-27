@@ -22,6 +22,7 @@ TOPIC_BY_PREFIX = {
 }
 
 KAFKA_TOPICS = tuple(dict.fromkeys([*TOPIC_BY_PREFIX.values(), "ax.audit.events.v1"]))
+KAFKA_DLQ_TOPIC = "ax.events.dlq.v1"
 
 
 class EventEnvelope(BaseModel):

@@ -166,7 +166,8 @@ spec:
                 ax.knowledge.events.v1 \
                 ax.work-order.events.v1 \
                 ax.feedback.events.v1 \
-                ax.audit.events.v1; do
+                ax.audit.events.v1 \
+                ax.events.dlq.v1; do
                 /opt/kafka/bin/kafka-topics.sh \
                   --bootstrap-server kafka:9092 \
                   --create --if-not-exists \
@@ -174,4 +175,108 @@ spec:
                   --partitions 3 \
                   --replication-factor 1
               done
+{{- end }}
+{{- if and .Values.kafka.enabled .Values.kafka.ui.enabled }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kafka-ui-credentials
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  username: {{ required "kafka.ui.username is required when Kafka UI is enabled" .Values.kafka.ui.username | quote }}
+  password: {{ required "kafka.ui.password is required when Kafka UI is enabled" .Values.kafka.ui.password | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-ui
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/name: kafka-ui
+spec:
+  selector:
+    app.kubernetes.io/name: kafka-ui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-ui
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/name: kafka-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka-ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka-ui
+        app.kubernetes.io/part-of: ax-sentinel
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kafka-ui
+          image: {{ .Values.kafka.ui.image | quote }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: KAFKA_CLUSTERS_0_NAME
+              value: ax-sentinel-local
+            - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
+              value: kafka:9092
+            - name: DYNAMIC_CONFIG_ENABLED
+              value: "false"
+            - name: SERVER_SERVLET_CONTEXT_PATH
+              value: {{ .Values.kafka.ui.contextPath | quote }}
+            - name: SERVER_FORWARDHEADERSSTRATEGY
+              value: native
+            - name: AUTH_TYPE
+              value: LOGIN_FORM
+            - name: SPRING_SECURITY_USER_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: kafka-ui-credentials
+                  key: username
+            - name: SPRING_SECURITY_USER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kafka-ui-credentials
+                  key: password
+          readinessProbe:
+            httpGet:
+              path: {{ printf "%s/actuator/health" .Values.kafka.ui.contextPath }}
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: {{ printf "%s/actuator/health" .Values.kafka.ui.contextPath }}
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
 {{- end }}

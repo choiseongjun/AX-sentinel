@@ -23,6 +23,15 @@ spec:
                 port:
                   name: http
           {{- end }}
+          {{- if and .Values.kafka.enabled .Values.kafka.ui.enabled }}
+          - path: {{ .Values.kafka.ui.contextPath }}
+            pathType: Prefix
+            backend:
+              service:
+                name: kafka-ui
+                port:
+                  name: http
+          {{- end }}
           - path: /
             pathType: Prefix
             backend:
