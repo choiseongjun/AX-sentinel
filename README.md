@@ -19,9 +19,9 @@ AI는 설비를 직접 조작하지 않습니다. 분석 결과는 운영 관리
 - Amazon Bedrock Converse 기반 장애 원인 및 조치안 생성
 - Ollama 기반 로컬 한국어 장애 분석과 JSON Schema 구조화 출력
 - S3 문서 저장과 Bedrock Knowledge Bases 기반 RAG
-- Kafka 도메인 이벤트, consumer group·멱등 처리 이력, SNS 위험 경보와
-  Redis Pub/Sub
-  다중 Pod fan-out
+- Kafka 도메인 이벤트, consumer group·멱등 처리 이력과 3회 재시도 DLQ
+- SNS 위험 경보와 Redis Pub/Sub 다중 Pod WebSocket fan-out
+- Kafbat UI 기반 토픽 메시지, partition/offset, consumer lag와 DLQ 조회
 - 관리자 승인·수정 승인·반려, 작업 티켓, 증빙 사진과 복구 확인
 - AI 분석 정확도 및 조치안 유용성 피드백
 - 서비스별 Prometheus HTTP 메트릭
@@ -29,6 +29,25 @@ AI는 설비를 직접 조작하지 않습니다. 분석 결과는 운영 관리
 - Docker Compose 및 LocalStack 로컬 개발 환경
 - Terraform 기반 AWS VPC, EKS, ECR, Cognito, DynamoDB, S3와 Bedrock 구성
 - Helm 기반 Kubernetes 배포, HPA, PDB, NetworkPolicy와 ALB Ingress
+
+## 현재 검증 상태
+
+2026년 7월 27일 LocalStack EKS 환경에서 다음 항목을 실제 검증했습니다.
+
+| 검증 항목 | 결과 |
+| --- | --- |
+| Kubernetes 배포 | Helm release 배포 완료, Kafka 포함 전체 workload Ready |
+| 인증과 권한 | Keycloak Authorization Code + PKCE 로그인, FastAPI JWT/JWKS·Realm role 검사 |
+| 실시간 수집 | 로그인된 웹에서 센서 54건 추가 수신, WebSocket 화면 즉시 갱신 |
+| Kafka 흐름 | telemetry 누적 63건, Event Worker consumer lag 전 partition `0` |
+| 장애 격리 | 잘못된 event envelope를 3회 재시도 후 `ax.events.dlq.v1`로 이동 |
+| Kafka 운영 화면 | Kafbat UI에서 8개 애플리케이션 토픽, 메시지, offset, consumer group과 DLQ 조회 |
+| 자동화 검사 | Python 테스트 31개, Ruff, React/Vite build와 Helm template 통과 |
+| GitHub | 주요 구현을 `main`에 순차 반영 |
+
+실시간 시험 중 임계치 초과 신호도 수신했습니다. 동일 설비·센서에 미해결 자동
+장애가 이미 있으면 중복 장애 생성을 억제하는 정책도 함께 확인했습니다.
+위 수치는 운영 성능 지표가 아니라 현재 로컬 통합 환경의 기능 검증 기록입니다.
 
 ## AI 도입 개요
 
@@ -378,22 +397,19 @@ Docker Compose 웹(`http://localhost:3000`)과 포트를 분리했으므로 두 
 `ap-northeast-2`를 유지합니다. LocalStack ECR 주소만 로컬 TLS 인증서와
 호환되는 `us-east-1` registry hostname을 사용합니다.
 
-### 실시간 센서 데이터 지속 발생
+### 실시간 센서 데이터 발생
 
-EKS의 Incident API로 센서 데이터와 로그를 1초 간격으로 계속 전송합니다.
-실행 중인 터미널에서 `Ctrl+C`를 누르면 발생기가 종료됩니다.
+LocalStack EKS의 센서 수집 API는 Keycloak access token을 요구합니다.
+`http://localhost:8081`에 `manager` 또는 `admin`으로 로그인한 뒤
+`실시간 데이터 → 데모 스트림 시작`을 누르는 것이 기본 시험 방법입니다.
+브라우저가 access token을 첨부해 약 1.5초 간격으로 전송하고, 같은 화면의
+WebSocket에서 결과를 즉시 확인할 수 있습니다.
 
-```powershell
-.\scripts\telemetry-producer.ps1
-```
-
-다른 주소나 전송 주기를 사용할 수도 있습니다.
-
-```powershell
-.\scripts\telemetry-producer.ps1 `
-  -Endpoint "http://localhost:8081/api/v1/telemetry" `
-  -IntervalMilliseconds 1000
-```
+`scripts/telemetry-producer.ps1`은 인증을 비활성화한 Docker Compose 개발
+모드나 별도의 인증 프록시를 둔 설비 게이트웨이 시험용입니다. Keycloak이
+활성화된 EKS API에 인증 헤더 없이 직접 실행하면 `401 Unauthorized`가
+반환되는 것이 정상입니다. 운영 설비 연동은 사용자 토큰 재사용이 아닌
+IoT Core, mTLS 또는 전용 machine identity로 분리해야 합니다.
 
 ## 로컬 모드와 AWS 모드
 
@@ -404,7 +420,8 @@ EKS의 Incident API로 센서 데이터와 로그를 1초 간격으로 계속 �
 | RAG | DynamoDB 저장 텍스트 검색 | DynamoDB 저장 텍스트 검색 | Bedrock Knowledge Bases |
 | 데이터 | LocalStack DynamoDB/S3 | LocalStack DynamoDB/S3 | AWS DynamoDB/S3 |
 | 센서 갱신 | HTTP + WebSocket | HTTP + WebSocket/Redis | HTTP + WebSocket/Redis |
-| 실행 환경 | Docker Compose | LocalStack EKS Pod | EKS Pod + HPA |
+| Kafka 운영 | CLI | Kafbat UI + CLI | MSK 지표 + 운영 대시보드 |
+| 실행 환경 | Docker Compose | EKS Pod + Kafka/Kafbat UI | EKS Pod + HPA |
 
 Docker Compose의 역할 선택은 편의용 시뮬레이션이다. LocalStack EKS에서는
 Keycloak이 실제 access token을 발급하고 FastAPI가 역할을 검증한다.
@@ -444,6 +461,7 @@ Copy-Item .env.example .env
 | `EVENT_BUS` | LocalStack EKS: `kafka` | `disabled`, `kafka`, `sqs` 또는 `dual` |
 | `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` | Kafka broker 목록 |
 | `KAFKA_CONSUMER_GROUP` | `ax-sentinel-event-worker-v1` | Event Worker consumer group |
+| `KAFKA_MAX_PROCESSING_ATTEMPTS` | `3` | DLQ 격리 전 동일 offset 처리 시도 횟수 |
 | `SNS_TOPIC` | `axsentinel-alerts` | 경보 토픽 |
 | `WEBSOCKET_BROKER` | `memory` | `memory` 또는 `redis` |
 | `REDIS_URL` | 없음 | Redis Pub/Sub 접속 URL |
@@ -773,6 +791,7 @@ python -m venv .venv
 - Ollama JSON Schema 요청과 분석 감사 정보
 - 로컬 문서 RAG 검색
 - Kafka event envelope, topic routing, consumer event ID 멱등 처리
+- Kafka 처리 실패 3회 재시도와 DLQ payload 보존
 
 ### React
 
