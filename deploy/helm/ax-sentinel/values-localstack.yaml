@@ -10,6 +10,10 @@ global:
   eventsQueue: axsentinel-events
   eventsDlq: axsentinel-events-dlq
   eventWaitTimeSeconds: 10
+  eventBus: kafka
+  kafkaBootstrapServers: kafka:9092
+  kafkaConsumerGroup: ax-sentinel-event-worker-v1
+  kafkaPublishTimeoutSeconds: 10
   alertsTopic: axsentinel-alerts
   websocketBroker: redis
   redisUrl: redis://redis:6379/0
@@ -96,3 +100,8 @@ keycloak:
   clientId: ax-sentinel-web
   externalBaseUrl: http://localhost:8081/keycloak
   internalBaseUrl: http://keycloak:8080/keycloak
+
+kafka:
+  enabled: true
+  image: apache/kafka:3.9.1
+  storage: 5Gi

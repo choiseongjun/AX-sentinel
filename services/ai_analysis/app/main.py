@@ -12,6 +12,7 @@ from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
 from shared.config import get_settings
 from shared.dynamodb import get_repository
+from shared.events import get_event_publisher
 from shared.rag import RetrievedChunk, get_retriever
 
 from .engine import get_analysis_engine
@@ -248,7 +249,7 @@ async def _generate(
 async def analyze_incident(
     request: AnalysisRequest,
     http_request: Request,
-    _: Annotated[
+    principal: Annotated[
         Principal,
         Depends(require_roles(Role.OPERATOR_MANAGER, Role.SYSTEM_ADMIN)),
     ],
@@ -296,6 +297,13 @@ async def analyze_incident(
             updated_at=now,
         )
         await run_in_threadpool(repository.put, "expert_review", review.id, review)
+    await run_in_threadpool(
+        get_event_publisher().publish,
+        "analysis.completed",
+        result.model_dump(mode="json"),
+        key=result.incident_id,
+        actor_id=principal.subject,
+    )
     return result
 
 

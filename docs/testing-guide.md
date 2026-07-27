@@ -124,7 +124,38 @@ Ollama 분석은 생성형 모델을 사용하므로 원인 후보 정확도는 
 검증할 수 있다. 결정론적인 회귀 검사가 필요하면 `AI_PROVIDER=mock`으로
 전환한다.
 
-## 5. 자동화 테스트
+## 5. Kafka 이벤트 흐름 확인
+
+LocalStack EKS에서는 센서·장애·분석·문서·승인·작업·피드백 상태 변화가
+Kafka로 발행된다. 먼저 broker와 토픽을 확인한다.
+
+```powershell
+kubectl get statefulset kafka -n ax-sentinel
+
+kubectl exec -n ax-sentinel kafka-0 -- `
+  /opt/kafka/bin/kafka-topics.sh `
+  --bootstrap-server kafka:9092 `
+  --list
+```
+
+웹에서 `실시간 데이터 → 데모 스트림 시작`을 3초 정도 실행한 뒤 중지하거나
+`장애 관리 → 가상 이상 발생`을 누른다. Consumer의 offset과 lag를 확인한다.
+
+```powershell
+kubectl exec -n ax-sentinel kafka-0 -- `
+  /opt/kafka/bin/kafka-consumer-groups.sh `
+  --bootstrap-server kafka:9092 `
+  --describe `
+  --group ax-sentinel-event-worker-v1 `
+  --offsets
+```
+
+`CURRENT-OFFSET`이 증가하고 `LAG`가 `0`이면 Event Worker가 메시지를
+처리하고 commit한 상태다. 처리 이력은 `axsentinel-events` DynamoDB
+테이블에 `event_id`, `event_type`, `topic`, `partition`, `offset`,
+`producer`, `correlation_id`와 함께 저장된다.
+
+## 6. 자동화 테스트
 
 ```powershell
 Set-Location C:\pj\AXSentinel
@@ -140,7 +171,7 @@ npm --prefix web run build
 - Ruff 결과 `All checks passed!`
 - React/Vite 프로덕션 빌드 성공
 
-## 6. 인증과 API 보안 확인
+## 7. 인증과 API 보안 확인
 
 ```powershell
 $base = "http://localhost:8081"
@@ -165,7 +196,7 @@ try {
 시험한다. Password Grant는 의도적으로 비활성화되어 있으므로 비밀번호로
 CLI access token을 직접 발급하지 않는다.
 
-## 7. 실제 AWS Cognito·Bedrock 시험
+## 8. 실제 AWS Cognito·Bedrock 시험
 
 LocalStack EKS의 기본 AI는 호스트 Ollama이며 인증은 Keycloak이 담당한다.
 실제 AWS Cognito와 Bedrock은 유효한 개발용 AWS 자격 증명과 Terraform
@@ -187,7 +218,7 @@ $env:BEDROCK_DATA_SOURCE_ID = "<data-source-id>"
 검증하려면 `COGNITO_TEST_USERNAME`과 `COGNITO_TEST_PASSWORD`를 현재 셸에만
 설정한다. 비밀번호와 토큰은 저장소에 기록하지 않는다.
 
-## 8. Ollama 상태 확인
+## 9. Ollama 상태 확인
 
 ```powershell
 ollama --version
@@ -211,7 +242,7 @@ kubectl exec -n ax-sentinel deployment/ai-analysis-service -- `
 장애 분석 결과의 `분석 감사 정보`에 제공자 `ollama`, 모델
 `hoangquan456/qwen3-nothink:4b`가 표시되면 정상이다.
 
-## 9. 문제 해결
+## 10. 문제 해결
 
 ### Windows PowerShell 5.1에서 한글 응답이 깨지는 경우
 

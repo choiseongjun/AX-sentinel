@@ -11,6 +11,7 @@ from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
 from shared.config import get_settings
 from shared.dynamodb import get_repository
+from shared.events import get_event_publisher
 
 app = create_app("metrics-service")
 
@@ -31,12 +32,20 @@ class FeedbackAccepted(BaseModel):
 @app.post("/api/v1/feedback", response_model=FeedbackAccepted, tags=["ai-operations"])
 async def record_feedback(
     feedback: AnalysisFeedback,
-    _: Annotated[
+    principal: Annotated[
         Principal,
         Depends(require_roles(Role.FIELD_WORKER, Role.OPERATOR_MANAGER, Role.SYSTEM_ADMIN)),
     ],
 ) -> FeedbackAccepted:
-    await run_in_threadpool(get_repository().put, "feedback", str(uuid4()), feedback)
+    feedback_id = str(uuid4())
+    await run_in_threadpool(get_repository().put, "feedback", feedback_id, feedback)
+    await run_in_threadpool(
+        get_event_publisher().publish,
+        "feedback.submitted",
+        {"id": feedback_id, **feedback.model_dump(mode="json")},
+        key=feedback.analysis_id,
+        actor_id=principal.subject,
+    )
     return FeedbackAccepted(accepted=True)
 
 

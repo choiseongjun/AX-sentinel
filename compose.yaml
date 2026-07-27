@@ -16,6 +16,9 @@ x-app-environment: &app-environment
   DOCUMENTS_BUCKET: ${S3_BUCKET:-axsentinel-local}
   EVENTS_QUEUE: ${SQS_QUEUE:-axsentinel-events}
   EVENTS_DLQ: ${SQS_DLQ:-axsentinel-events-dlq}
+  EVENT_BUS: kafka
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  KAFKA_CONSUMER_GROUP: ax-sentinel-event-worker-v1
   ALERTS_TOPIC: ${SNS_TOPIC:-axsentinel-alerts}
 
 x-app-base: &app-base
@@ -23,6 +26,8 @@ x-app-base: &app-base
   depends_on:
     localstack:
       condition: service_healthy
+    kafka-init:
+      condition: service_completed_successfully
   environment: *app-environment
   healthcheck:
     test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/ready')"]
@@ -73,6 +78,63 @@ services:
       retries: 20
       start_period: 10s
 
+  kafka:
+    image: apache/kafka:3.9.1
+    container_name: axsentinel-kafka
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_MIN_INSYNC_REPLICAS: "1"
+      KAFKA_NUM_PARTITIONS: "3"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  kafka-init:
+    image: apache/kafka:3.9.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - /bin/bash
+      - -ec
+      - >-
+        for topic in
+        ax.telemetry.events.v1
+        ax.incident.events.v1
+        ax.analysis.events.v1
+        ax.knowledge.events.v1
+        ax.work-order.events.v1
+        ax.feedback.events.v1
+        ax.audit.events.v1;
+        do
+        /opt/kafka/bin/kafka-topics.sh
+        --bootstrap-server kafka:9092
+        --create --if-not-exists
+        --topic "$$topic"
+        --partitions 3
+        --replication-factor 1;
+        done
+
   asset-service:
     <<: *app-base
     image: axsentinel/asset-service:local
@@ -82,6 +144,7 @@ services:
         SERVICE: asset
     environment:
       <<: *app-environment
+      SERVICE_NAME: asset-service
       DYNAMODB_TABLE: axsentinel-asset
     ports:
       - "127.0.0.1:8101:8080"
@@ -95,6 +158,7 @@ services:
         SERVICE: incident
     environment:
       <<: *app-environment
+      SERVICE_NAME: incident-service
       DYNAMODB_TABLE: axsentinel-incident
     ports:
       - "127.0.0.1:8102:8080"
@@ -108,6 +172,7 @@ services:
         SERVICE: ai_analysis
     environment:
       <<: *app-environment
+      SERVICE_NAME: ai-analysis-service
       DYNAMODB_TABLE: axsentinel-analysis
       ASSET_SERVICE_URL: http://asset-service:8080
       KNOWLEDGE_SERVICE_URL: http://knowledge-service:8080
@@ -123,6 +188,7 @@ services:
         SERVICE: knowledge
     environment:
       <<: *app-environment
+      SERVICE_NAME: knowledge-service
       DYNAMODB_TABLE: axsentinel-knowledge
     ports:
       - "127.0.0.1:8104:8080"
@@ -136,6 +202,7 @@ services:
         SERVICE: work_order
     environment:
       <<: *app-environment
+      SERVICE_NAME: work-order-service
       DYNAMODB_TABLE: axsentinel-work-order
       INCIDENT_SERVICE_URL: http://incident-service:8080
     ports:
@@ -150,6 +217,7 @@ services:
         SERVICE: metrics
     environment:
       <<: *app-environment
+      SERVICE_NAME: metrics-service
       DYNAMODB_TABLE: axsentinel-metrics
       ANALYSIS_SERVICE_URL: http://ai-analysis-service:8080
       WORK_ORDER_SERVICE_URL: http://work-order-service:8080
@@ -165,6 +233,7 @@ services:
         SERVICE: event_worker
     environment:
       <<: *app-environment
+      SERVICE_NAME: event-worker
       DYNAMODB_TABLE: axsentinel-events
     ports:
       - "127.0.0.1:8107:8080"
@@ -204,3 +273,5 @@ services:
 volumes:
   localstack-data:
     name: axsentinel-localstack-pro-data
+  kafka-data:
+    name: axsentinel-kafka-data

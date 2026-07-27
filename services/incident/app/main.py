@@ -244,7 +244,7 @@ async def _create_automatic_incident(telemetry: TelemetryRecord) -> Incident | N
 )
 async def ingest_telemetry(
     request: TelemetryRequest,
-    _: Annotated[
+    principal: Annotated[
         Principal,
         Depends(require_roles(Role.OPERATOR_MANAGER, Role.SYSTEM_ADMIN)),
     ],
@@ -261,6 +261,13 @@ async def ingest_telemetry(
         "telemetry",
         telemetry.id,
         telemetry,
+    )
+    await run_in_threadpool(
+        get_event_publisher().publish,
+        "telemetry.received",
+        telemetry.model_dump(mode="json"),
+        key=telemetry.equipment_id,
+        actor_id=principal.subject,
     )
     await _publish_realtime("ax-sentinel.telemetry", telemetry_connections, telemetry)
     await _create_automatic_incident(telemetry)
@@ -312,7 +319,7 @@ async def incident_websocket(websocket: WebSocket) -> None:
 )
 async def simulate_incident(
     request: VirtualIncidentRequest,
-    _: Annotated[
+    principal: Annotated[
         Principal,
         Depends(require_roles(Role.OPERATOR_MANAGER, Role.SYSTEM_ADMIN)),
     ],
@@ -327,6 +334,14 @@ async def simulate_incident(
     )
     repository = get_repository()
     await run_in_threadpool(repository.put, "incident", incident.id, incident)
+    await run_in_threadpool(
+        get_event_publisher().publish,
+        "incident.detected",
+        incident.model_dump(mode="json"),
+        key=incident.id,
+        actor_id=principal.subject,
+        alert=True,
+    )
     await _publish_realtime("ax-sentinel.incidents", incident_connections, incident)
     return incident
 
@@ -354,7 +369,7 @@ async def get_incident(incident_id: str) -> Incident:
 async def update_incident_status(
     incident_id: str,
     update: IncidentStatusUpdate,
-    _: Annotated[
+    principal: Annotated[
         Principal,
         Depends(require_roles(Role.OPERATOR_MANAGER, Role.FIELD_WORKER, Role.SYSTEM_ADMIN)),
     ],
@@ -368,7 +383,21 @@ async def update_incident_status(
             status_code=409,
             detail=f"Invalid transition: {incident.status} -> {update.status}",
         )
+    previous_status = incident.status
     incident.status = update.status
     await run_in_threadpool(get_repository().put, "incident", incident.id, incident)
+    await run_in_threadpool(
+        get_event_publisher().publish,
+        "incident.status_changed",
+        {
+            "id": incident.id,
+            "incident_id": incident.id,
+            "equipment_id": incident.equipment_id,
+            "previous_status": previous_status,
+            "status": incident.status,
+        },
+        key=incident.id,
+        actor_id=principal.subject,
+    )
     await _publish_realtime("ax-sentinel.incidents", incident_connections, incident)
     return incident

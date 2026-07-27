@@ -12,6 +12,7 @@ from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
 from shared.config import get_settings
 from shared.dynamodb import get_repository
+from shared.events import get_event_publisher
 from shared.object_store import get_document_store
 from shared.realtime import get_realtime_bus
 
@@ -59,13 +60,20 @@ class ApprovalRecord(ApprovalRequest):
 )
 async def decide_action_plan(
     request: ApprovalRequest,
-    _: Annotated[
+    principal: Annotated[
         Principal,
         Depends(require_roles(Role.OPERATOR_MANAGER, Role.SYSTEM_ADMIN)),
     ],
 ) -> WorkOrder | ApprovalRecord:
     approval = ApprovalRecord(id=str(uuid4()), **request.model_dump())
     await run_in_threadpool(get_repository().put, "approval", approval.id, approval)
+    await run_in_threadpool(
+        get_event_publisher().publish,
+        "approval.decided",
+        approval.model_dump(mode="json"),
+        key=approval.incident_id,
+        actor_id=principal.subject,
+    )
 
     if request.decision == ApprovalDecision.REJECT:
         return approval
@@ -88,6 +96,13 @@ async def decide_action_plan(
         ],
     )
     await run_in_threadpool(get_repository().put, "work_order", work_order.id, work_order)
+    await run_in_threadpool(
+        get_event_publisher().publish,
+        "work_order.created",
+        work_order.model_dump(mode="json"),
+        key=work_order.incident_id,
+        actor_id=principal.subject,
+    )
     return work_order
 
 
@@ -174,7 +189,7 @@ async def complete_work_order(
     work_order_id: str,
     completion: WorkOrderCompletion,
     http_request: Request,
-    _: Annotated[
+    principal: Annotated[
         Principal,
         Depends(require_roles(Role.FIELD_WORKER, Role.SYSTEM_ADMIN)),
     ],
@@ -222,4 +237,11 @@ async def complete_work_order(
             )
             if settings.websocket_broker == "redis":
                 await get_realtime_bus().publish("ax-sentinel.incidents", incident)
+    await run_in_threadpool(
+        get_event_publisher().publish,
+        "work_order.completed",
+        work_order.model_dump(mode="json"),
+        key=work_order.incident_id,
+        actor_id=principal.subject,
+    )
     return work_order

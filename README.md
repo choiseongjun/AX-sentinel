@@ -19,7 +19,8 @@ AI는 설비를 직접 조작하지 않습니다. 분석 결과는 운영 관리
 - Amazon Bedrock Converse 기반 장애 원인 및 조치안 생성
 - Ollama 기반 로컬 한국어 장애 분석과 JSON Schema 구조화 출력
 - S3 문서 저장과 Bedrock Knowledge Bases 기반 RAG
-- SQS 도메인 이벤트 Worker, 3회 재시도·DLQ, SNS 위험 경보와 Redis Pub/Sub
+- Kafka 도메인 이벤트, consumer group·멱등 처리 이력, SNS 위험 경보와
+  Redis Pub/Sub
   다중 Pod fan-out
 - 관리자 승인·수정 승인·반려, 작업 티켓, 증빙 사진과 복구 확인
 - AI 분석 정확도 및 조치안 유용성 피드백
@@ -180,15 +181,18 @@ flowchart TB
     Knowledge --> KB["Bedrock Knowledge Base"]
     KB --> Vector["S3 Vectors"]
     AI --> RAG["RAG Retriever"]
-    RAG --> DDB
+    RAG --> Knowledge
     RAG --> KB
     AI --> Provider{"AI Provider"}
     Provider --> Ollama["Local Ollama"]
     Provider --> Bedrock["Amazon Bedrock Converse"]
 
-    Incident --> SQS["SQS Events"]
-    SQS --> EventWorker
-    SQS --> DLQ["SQS Dead-letter Queue"]
+    Incident --> Kafka["Kafka Domain Events"]
+    AI --> Kafka
+    Knowledge --> Kafka
+    Work --> Kafka
+    Metrics --> Kafka
+    Kafka --> EventWorker
     Incident --> SNS["SNS Alerts"]
     Incident <--> Redis["Redis Pub/Sub"]
 
@@ -215,7 +219,7 @@ EC2 Managed Node Group은 Pod가 공유하는 컴퓨팅 기반입니다.
 | Backend | Python 3.12, FastAPI, Pydantic, Uvicorn |
 | AI | 로컬 Ollama, Amazon Bedrock Converse API, 선택적 Bedrock Guardrail |
 | RAG | Amazon Bedrock Knowledge Bases, S3 Vectors, Amazon S3 |
-| Data | Amazon DynamoDB single-table, S3, SQS, SNS, Redis Pub/Sub |
+| Data | 서비스별 Amazon DynamoDB, S3, Apache Kafka, SNS, Redis Pub/Sub |
 | Auth | LocalStack EKS: Keycloak / AWS: Cognito 호환, OIDC + PKCE, JWT/JWKS |
 | Local | Docker Compose, LocalStack Pro, LocalStack EKS |
 | Platform | Amazon EKS, ECR, VPC, Pod Identity |
@@ -233,7 +237,7 @@ EC2 Managed Node Group은 Pod가 공유하는 컴퓨팅 기반입니다.
 | `knowledge-service` | 문서 업로드, 검색, Bedrock 색인 동기화 | `http://localhost:8104/docs` |
 | `work-order-service` | 승인, 작업 티켓, 현장 작업 완료 | `http://localhost:8105/docs` |
 | `metrics-service` | AI 평가 피드백과 운영 지표 | `http://localhost:8106/docs` |
-| `event-worker` | SQS 이벤트 소비, 처리 이력, 재시도와 DLQ | `http://localhost:8107/docs` |
+| `event-worker` | Kafka consumer group, event ID 멱등 처리, topic·partition·offset 이력 | `http://localhost:8107/docs` |
 | `web` | React 운영 콘솔과 API 프록시 | `http://localhost:3000` |
 | `localstack` | 로컬 AWS 호환 게이트웨이 | `http://localhost:4566` |
 
@@ -427,6 +431,9 @@ Copy-Item .env.example .env
 | `BEDROCK_DATA_SOURCE_ID` | 없음 | Bedrock Data Source ID |
 | `SQS_QUEUE` | `axsentinel-events` | 이벤트 큐 |
 | `SQS_DLQ` | `axsentinel-events-dlq` | 3회 처리 실패 메시지 격리 큐 |
+| `EVENT_BUS` | LocalStack EKS: `kafka` | `disabled`, `kafka`, `sqs` 또는 `dual` |
+| `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` | Kafka broker 목록 |
+| `KAFKA_CONSUMER_GROUP` | `ax-sentinel-event-worker-v1` | Event Worker consumer group |
 | `SNS_TOPIC` | `axsentinel-alerts` | 경보 토픽 |
 | `WEBSOCKET_BROKER` | `memory` | `memory` 또는 `redis` |
 | `REDIS_URL` | 없음 | Redis Pub/Sub 접속 URL |
@@ -725,6 +732,8 @@ LocalStack 시작 시 다음 리소스가 자동 생성됩니다.
 - DynamoDB tables: `axsentinel-asset`, `axsentinel-incident`,
   `axsentinel-analysis`, `axsentinel-knowledge`, `axsentinel-work-order`,
   `axsentinel-metrics`, `axsentinel-events`
+- Kafka StatefulSet와 7개 토픽: telemetry, incident, analysis, knowledge,
+  work-order, feedback, audit
 - SQS queue: `axsentinel-events`
 - SQS dead-letter queue: `axsentinel-events-dlq`
 - SNS topic: `axsentinel-alerts`
@@ -752,6 +761,7 @@ python -m venv .venv
 - mock 및 Bedrock 분석 결과 구조
 - Ollama JSON Schema 요청과 분석 감사 정보
 - 로컬 문서 RAG 검색
+- Kafka event envelope, topic routing, consumer event ID 멱등 처리
 
 ### React
 

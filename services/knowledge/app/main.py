@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
 from shared.dynamodb import get_repository
+from shared.events import get_event_publisher
 from shared.object_store import get_document_store
 from shared.rag import RetrievedChunk, get_retriever, start_ingestion_job
 
@@ -42,7 +43,7 @@ class Document(BaseModel):
 )
 async def upload_document(
     file: UploadFile,
-    _: Annotated[
+    principal: Annotated[
         Principal,
         Depends(require_roles(Role.OPERATOR_MANAGER, Role.SYSTEM_ADMIN)),
     ],
@@ -78,6 +79,13 @@ async def upload_document(
     )
     record = document.model_dump(mode="json") | {"search_text": search_text}
     await run_in_threadpool(get_repository().put, "document", document.id, record)
+    await run_in_threadpool(
+        get_event_publisher().publish,
+        "document.registered",
+        document.model_dump(mode="json"),
+        key=document.id,
+        actor_id=principal.subject,
+    )
     return document
 
 

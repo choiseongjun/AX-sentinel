@@ -29,7 +29,13 @@ flowchart LR
     UI --> WO["Work-order service"]
     UI --> MS["Metrics service"]
 
-    IS --> Q["SQS event bus"]
+    IS --> K["Kafka domain events"]
+    AI --> K
+    KS --> K
+    WO --> K
+    MS --> K
+    K --> EW["Event worker consumer group"]
+    EW --> EDB["Event processing DynamoDB"]
     IS --> N["SNS alerts"]
     AS --> ADB["Asset DynamoDB"]
     IS --> IDB["Incident DynamoDB"]
@@ -86,6 +92,35 @@ collects analyses, evaluations, and approvals through AI Analysis and Work
 Order APIs. Work Order changes incident status through the Incident API. These
 delegated synchronous calls forward the original access token so every receiving
 FastAPI service repeats signature, issuer, audience, expiration, and role checks.
+
+## Kafka event flow
+
+LocalStack EKS runs Apache Kafka 3.9.1 as a single-node KRaft StatefulSet.
+REST remains the command/query interface. After a domain write succeeds, the
+owning service publishes a versioned event with `acks=all`, bounded retries, a
+stable aggregate key, `event_id`, `correlation_id`, producer, actor, and
+timestamp. Access tokens and passwords are never placed in the envelope.
+
+The topics are:
+
+- `ax.telemetry.events.v1`
+- `ax.incident.events.v1`
+- `ax.analysis.events.v1`
+- `ax.knowledge.events.v1`
+- `ax.work-order.events.v1`
+- `ax.feedback.events.v1`
+- `ax.audit.events.v1`
+
+`event-worker` consumes all topics as
+`ax-sentinel-event-worker-v1`, persists the topic, partition, offset, event ID,
+producer, correlation ID, and result, and commits offsets only after the
+processing record is stored. Replayed events are skipped using the persisted
+`event_id`. SQS support remains behind `EVENT_BUS=sqs|dual` for AWS migration
+compatibility; Kafka is the LocalStack EKS default.
+
+The current implementation publishes after the domain write. A transactional
+outbox that atomically stores the domain change and pending event remains the
+next reliability enhancement for broker-outage recovery.
 
 ## Service boundaries
 

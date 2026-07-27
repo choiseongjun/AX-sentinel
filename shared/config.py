@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     events_queue: str = "axsentinel-events"
     events_dlq: str = "axsentinel-events-dlq"
     event_wait_time_seconds: int = 10
+    event_bus: str = "disabled"
+    service_name: str = "ax-sentinel"
+    kafka_bootstrap_servers: str = "kafka:9092"
+    kafka_consumer_group: str = "ax-sentinel-event-worker-v1"
+    kafka_publish_timeout_seconds: float = 10
     alerts_topic: str = "axsentinel-alerts"
     websocket_broker: str = "memory"
     redis_url: str | None = None

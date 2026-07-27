@@ -2,7 +2,7 @@
 
 ## 1. 목적
 
-이 문서는 AX Sentinel을 다음 원칙의 MSA로 발전시키기 위한 목표 설계를
+이 문서는 AX Sentinel의 현재 Kafka 기반 MSA 통신과 다음 확장 목표를
 정의한다.
 
 - 로그인부터 장애 해결과 AI 평가까지 사용자·서비스 흐름을 추적한다.
@@ -13,8 +13,16 @@
 - 메시지 중복, 순서 변경, 재처리와 장애 복구를 기본 전제로 설계한다.
 - AI는 진단을 지원하지만 설비 제어와 고위험 조치를 직접 실행하지 않는다.
 
-이번 단계는 목표 설계이며 Kafka 클러스터나 신규 서비스를 즉시 배포하는
-구현 단계는 아니다.
+현재 LocalStack EKS에는 단일 노드 KRaft Kafka, 7개 도메인 토픽, 공통
+versioned envelope, FastAPI producer와 Event Worker consumer group이
+구현되어 있다. 센서 수신, 장애 감지·상태 변경, AI 분석 완료, 문서 등록,
+승인·작업 완료와 피드백 이벤트가 실제 broker를 통과한다. Event Worker는
+`event_id` 중복을 차단하고 topic·partition·offset 처리 이력을 DynamoDB에
+저장한 후 offset을 commit한다.
+
+아직 구현되지 않은 목표는 Transactional Outbox, Schema Registry, Kafka
+기반 AI 비동기 명령, 전용 Realtime Gateway, DLQ 토픽과 운영 MSK
+전환이다. 아래 내용은 현재 구현과 이 확장 목표를 함께 설명한다.
 
 ## 2. 핵심 결정
 

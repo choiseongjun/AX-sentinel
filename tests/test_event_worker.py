@@ -4,7 +4,8 @@ from typing import Any
 
 import pytest
 
-from services.event_worker.app.main import EventWorker, parse_event_message
+from services.event_worker.app.main import EventWorker, KafkaEventWorker, parse_event_message
+from shared.events import EventEnvelope, topic_for
 
 
 class MemoryRepository:
@@ -13,6 +14,16 @@ class MemoryRepository:
 
     def put(self, entity_type: str, entity_id: str, value: Any) -> None:
         self.items.append((entity_type, entity_id, value))
+
+    def get(self, entity_type: str, entity_id: str) -> Any | None:
+        return next(
+            (
+                value
+                for stored_type, stored_id, value in reversed(self.items)
+                if stored_type == entity_type and stored_id == entity_id
+            ),
+            None,
+        )
 
 
 class FakeSqs:
@@ -74,3 +85,46 @@ def test_worker_persists_before_deleting_message() -> None:
     assert sqs.deleted == [
         {"QueueUrl": "http://sqs/events", "ReceiptHandle": "receipt-1"}
     ]
+
+
+def test_topic_mapping_uses_bounded_domain_topics() -> None:
+    assert topic_for("telemetry.received") == "ax.telemetry.events.v1"
+    assert topic_for("incident.detected") == "ax.incident.events.v1"
+    assert topic_for("analysis.completed") == "ax.analysis.events.v1"
+    assert topic_for("unknown.event") == "ax.audit.events.v1"
+
+
+def test_kafka_worker_persists_envelope_with_offset() -> None:
+    repository = MemoryRepository()
+    worker = KafkaEventWorker(
+        repository=repository,  # type: ignore[arg-type]
+        bootstrap_servers="unused:9092",
+        consumer_group="test-group",
+    )
+    envelope = EventEnvelope(
+        event_id="event-1",
+        event_type="incident.detected",
+        producer="incident-service",
+        correlation_id="correlation-1",
+        payload={"incident_id": "incident-1"},
+    )
+    record = type(
+        "Record",
+        (),
+        {
+            "value": envelope.model_dump(mode="json"),
+            "topic": "ax.incident.events.v1",
+            "partition": 2,
+            "offset": 41,
+        },
+    )()
+
+    asyncio.run(worker.process_record(record))
+    asyncio.run(worker.process_record(record))
+
+    assert len(repository.items) == 1
+    processed = repository.items[0][2]
+    assert processed.id == "event-1"
+    assert processed.broker == "kafka"
+    assert processed.partition == 2
+    assert processed.offset == 41

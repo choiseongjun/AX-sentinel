@@ -46,6 +46,8 @@ spec:
           env:
             - name: ENVIRONMENT
               value: {{ $.Values.global.environment | quote }}
+            - name: SERVICE_NAME
+              value: {{ .name | quote }}
             - name: AWS_REGION
               value: {{ $.Values.global.awsRegion | quote }}
             - name: DYNAMODB_TABLE
@@ -68,6 +70,16 @@ spec:
               value: {{ $.Values.global.eventsDlq | quote }}
             - name: EVENT_WAIT_TIME_SECONDS
               value: {{ $.Values.global.eventWaitTimeSeconds | quote }}
+            - name: EVENT_BUS
+              value: {{ $.Values.global.eventBus | quote }}
+            {{- if or (eq $.Values.global.eventBus "kafka") (eq $.Values.global.eventBus "dual") }}
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ required "global.kafkaBootstrapServers is required for Kafka" $.Values.global.kafkaBootstrapServers | quote }}
+            - name: KAFKA_CONSUMER_GROUP
+              value: {{ $.Values.global.kafkaConsumerGroup | quote }}
+            - name: KAFKA_PUBLISH_TIMEOUT_SECONDS
+              value: {{ $.Values.global.kafkaPublishTimeoutSeconds | quote }}
+            {{- end }}
             - name: ALERTS_TOPIC
               value: {{ $.Values.global.alertsTopic | quote }}
             - name: WEBSOCKET_BROKER
