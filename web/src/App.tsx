@@ -26,8 +26,9 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   beginSignIn,
+  authProviderName,
   getAccessToken,
-  isCognitoEnabled,
+  isOidcEnabled,
   restoreUser,
   roleFromUser,
   signOut,
@@ -219,8 +220,12 @@ function Login({ onLogin }: { onLogin: (role: string) => void }) {
             <div><strong>AX Sentinel</strong><span>설비 장애 대응 플랫폼</span></div>
           </div>
           <h2>운영 콘솔 로그인</h2>
-          <p>로컬 개발 환경의 사용자 역할을 선택하세요.</p>
-          {!isCognitoEnabled() && (
+          <p>
+            {isOidcEnabled()
+              ? `${authProviderName()} 계정으로 안전하게 로그인하세요.`
+              : "로컬 개발 환경의 사용자 역할을 선택하세요."}
+          </p>
+          {!isOidcEnabled() && (
             <>
               <label>사용자 역할</label>
               <select value={role} onChange={(event) => setRole(event.target.value)}>
@@ -232,13 +237,15 @@ function Login({ onLogin }: { onLogin: (role: string) => void }) {
           )}
           <button
             className="primary wide"
-            onClick={() => isCognitoEnabled() ? beginSignIn() : onLogin(role)}
+            onClick={() => isOidcEnabled() ? beginSignIn() : onLogin(role)}
           >
-            {isCognitoEnabled() ? "Cognito로 로그인" : "로컬 콘솔 시작"} <ChevronRight size={18} />
+            {isOidcEnabled() ? `${authProviderName()}로 로그인` : "로컬 콘솔 시작"} <ChevronRight size={18} />
           </button>
           <div className="security-note">
             <ShieldCheck size={16} />
-            운영 환경에서는 Cognito OIDC와 MFA로 보호됩니다.
+            {isOidcEnabled()
+              ? `${authProviderName()} OIDC로 인증합니다.`
+              : "로컬 역할 시뮬레이션 모드입니다."}
           </div>
         </div>
       </section>
@@ -268,10 +275,10 @@ function App() {
   const [selectedIncident, setSelectedIncident] = useState<Incident | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [notice, setNotice] = useState("");
-  const [authLoading, setAuthLoading] = useState(isCognitoEnabled());
+  const [authLoading, setAuthLoading] = useState(isOidcEnabled());
 
   useEffect(() => {
-    if (!isCognitoEnabled()) return;
+    if (!isOidcEnabled()) return;
     restoreUser()
       .then((user) => user && setRole(roleFromUser(user)))
       .catch((error) => setNotice(String(error)))
@@ -375,9 +382,9 @@ function App() {
           <div><span className="status-dot" /> 시스템 정상</div>
           <small>7개 서비스 연결됨</small>
         </div>
-        <button className="user-card" onClick={() => isCognitoEnabled() ? signOut() : setRole(null)}>
+        <button className="user-card" onClick={() => isOidcEnabled() ? signOut() : setRole(null)}>
           <span className="avatar">{role === "field_worker" ? "현" : role === "system_admin" ? "시" : "운"}</span>
-          <span><strong>{roleLabel(role)}</strong><small>로컬 사용자</small></span>
+          <span><strong>{roleLabel(role)}</strong><small>{isOidcEnabled() ? "인증 사용자" : "로컬 사용자"}</small></span>
           <LogOut size={17} />
         </button>
       </aside>

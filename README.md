@@ -24,7 +24,7 @@ AI는 설비를 직접 조작하지 않습니다. 분석 결과는 운영 관리
 - 관리자 승인·수정 승인·반려, 작업 티켓, 증빙 사진과 복구 확인
 - AI 분석 정확도 및 조치안 유용성 피드백
 - 서비스별 Prometheus HTTP 메트릭
-- OIDC 인증과 역할 기반 권한 제어(현재 Cognito 호환, 목표 Keycloak)
+- Keycloak OIDC/PKCE 로그인과 Realm role 기반 권한 제어
 - Docker Compose 및 LocalStack 로컬 개발 환경
 - Terraform 기반 AWS VPC, EKS, ECR, Cognito, DynamoDB, S3와 Bedrock 구성
 - Helm 기반 Kubernetes 배포, HPA, PDB, NetworkPolicy와 ALB Ingress
@@ -216,7 +216,7 @@ EC2 Managed Node Group은 Pod가 공유하는 컴퓨팅 기반입니다.
 | AI | 로컬 Ollama, Amazon Bedrock Converse API, 선택적 Bedrock Guardrail |
 | RAG | Amazon Bedrock Knowledge Bases, S3 Vectors, Amazon S3 |
 | Data | Amazon DynamoDB single-table, S3, SQS, SNS, Redis Pub/Sub |
-| Auth | 현재: Amazon Cognito 호환 / 목표: Keycloak OIDC + PKCE, JWT/JWKS |
+| Auth | LocalStack EKS: Keycloak / AWS: Cognito 호환, OIDC + PKCE, JWT/JWKS |
 | Local | Docker Compose, LocalStack Pro, LocalStack EKS |
 | Platform | Amazon EKS, ECR, VPC, Pod Identity |
 | IaC | Terraform, Helm, Kubernetes |
@@ -383,17 +383,17 @@ EKS의 Incident API로 센서 데이터와 로그를 1초 간격으로 계속 �
 
 ## 로컬 모드와 AWS 모드
 
-| 기능 | 로컬 Docker Compose | AWS/EKS |
-| --- | --- | --- |
-| 인증 | 비활성화, 화면에서 역할 선택 | Cognito OIDC + PKCE |
-| AI 분석 | Ollama `qwen3-nothink:4b` | Bedrock Converse |
-| RAG | DynamoDB 저장 텍스트 검색 | Bedrock Knowledge Bases |
-| 데이터 | LocalStack DynamoDB/S3 | AWS DynamoDB/S3 |
-| 센서 갱신 | HTTP 수집 + WebSocket/Redis push | HTTP 수집 + WebSocket/Redis push |
-| 실행 환경 | Docker Compose | EKS Pod + HPA |
+| 기능 | 로컬 Docker Compose | LocalStack EKS | AWS/EKS |
+| --- | --- | --- | --- |
+| 인증 | 비활성 역할 시뮬레이션 | Keycloak OIDC + PKCE | Cognito 호환 OIDC + PKCE |
+| AI 분석 | Ollama | Ollama `qwen3-nothink:4b` | Bedrock Converse |
+| RAG | DynamoDB 저장 텍스트 검색 | DynamoDB 저장 텍스트 검색 | Bedrock Knowledge Bases |
+| 데이터 | LocalStack DynamoDB/S3 | LocalStack DynamoDB/S3 | AWS DynamoDB/S3 |
+| 센서 갱신 | HTTP + WebSocket | HTTP + WebSocket/Redis | HTTP + WebSocket/Redis |
+| 실행 환경 | Docker Compose | LocalStack EKS Pod | EKS Pod + HPA |
 
-로컬에서 역할을 선택해도 API는 개발용 principal에 모든 역할을 부여합니다.
-실제 역할 검증은 `AUTH_MODE=cognito`인 운영 환경에서 적용됩니다.
+Docker Compose의 역할 선택은 편의용 시뮬레이션이다. LocalStack EKS에서는
+Keycloak이 실제 access token을 발급하고 FastAPI가 역할을 검증한다.
 
 ## 환경 변수
 
@@ -409,9 +409,12 @@ Copy-Item .env.example .env
 | `AWS_ENDPOINT_URL` | Compose에서 LocalStack 주소 지정 | AWS SDK endpoint override |
 | `DYNAMODB_TABLE` | `axsentinel-domain` | 도메인 데이터 테이블 |
 | `DOCUMENTS_BUCKET` / `S3_BUCKET` | `axsentinel-local` | 문서 저장 버킷 |
-| `AUTH_MODE` | `disabled` | `disabled` 또는 `cognito` |
+| `AUTH_MODE` | Compose: `disabled`, LocalStack EKS: `keycloak` | `disabled`, `keycloak` 또는 `cognito` |
 | `COGNITO_USER_POOL_ID` | 없음 | Cognito User Pool ID |
 | `COGNITO_CLIENT_ID` | 없음 | Cognito Web Client ID |
+| `OIDC_ISSUER` | Helm이 설정 | Keycloak token issuer |
+| `OIDC_JWKS_URL` | Helm이 설정 | FastAPI Pod가 접근할 Keycloak JWKS URL |
+| `OIDC_CLIENT_ID` | `ax-sentinel-web` | Keycloak audience/client ID |
 | `AI_PROVIDER` | `ollama` | `ollama`, `mock` 또는 `bedrock` |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama API 주소 |
 | `OLLAMA_MODEL` | `hoangquan456/qwen3-nothink:4b` | 로컬 분석 모델 |
@@ -428,14 +431,14 @@ Copy-Item .env.example .env
 | `WEBSOCKET_BROKER` | `memory` | `memory` 또는 `redis` |
 | `REDIS_URL` | 없음 | Redis Pub/Sub 접속 URL |
 
-웹 컨테이너는 시작할 때 `AUTH_MODE`, `COGNITO_ISSUER`,
-`COGNITO_CLIENT_ID`로 `/ax-config.js`를 생성합니다. Cognito 클라이언트는
-Authorization Code + PKCE를 사용하며 client secret을 웹에 포함하지 않습니다.
+웹 컨테이너는 시작할 때 `AUTH_MODE`, issuer와 client ID로 `/ax-config.js`를
+생성한다. Cognito와 Keycloak public client 모두 Authorization Code + PKCE를
+사용하며 client secret을 웹에 포함하지 않는다.
 
 ### 실제 AWS Cognito·Bedrock 통합 점검
 
-LocalStack EKS에서는 Cognito를 비활성화하고 AI 분석은 로컬 Ollama를
-사용합니다. 실제 Bedrock 검증은 개발용 AWS 계정의
+LocalStack EKS에서는 Keycloak과 로컬 Ollama를 사용합니다. 실제 Cognito와
+Bedrock 검증은 개발용 AWS 계정의
 유효한 자격 증명과 Terraform 출력값을 환경 변수로 지정하면 읽기 전용 구성
 검사, OIDC discovery/JWKS, 선택적 로그인, Bedrock 호출과 Knowledge Base
 검색까지 한 번에 검증할 수 있습니다. `AWS_ENDPOINT_URL`이 남아 있으면 실제
@@ -644,9 +647,9 @@ Invoke-RestMethod -Method Post `
 
 ### 현재 구현
 
-현재 실행 코드는 Cognito Authorization Code + PKCE 흐름과 비활성 로컬 인증
-모드를 지원합니다. FastAPI 미들웨어는 Cognito access token에 대해 다음
-항목을 확인합니다.
+현재 실행 코드는 Keycloak, Cognito Authorization Code + PKCE와 Docker
+Compose용 비활성 로컬 인증 모드를 지원합니다. Cognito 모드에서 FastAPI
+미들웨어는 access token에 대해 다음 항목을 확인합니다.
 
 - JWKS 기반 RS256 서명
 - Cognito issuer
@@ -657,17 +660,32 @@ Invoke-RestMethod -Method Post `
 고위험 API는 FastAPI dependency로 역할을 다시 검사하므로 웹 화면을 우회해
 직접 호출하더라도 동일한 권한 정책이 적용됩니다.
 
-### 목표 구조: Keycloak
+### LocalStack EKS Keycloak
 
-목표 MSA 구조에서는 Cognito를 Keycloak으로 교체합니다. React는 Keycloak
-Authorization Code + PKCE `S256`으로 로그인하고 FastAPI는 JWKS 서명,
-issuer, audience, 만료 시간과 Realm role을 검증합니다. 서비스 간 호출은
-서비스별 confidential client와 Client Credentials를 사용합니다.
+LocalStack EKS 배포는 Keycloak 26.7.0을 실제 인증 서버로 사용합니다. React는
+Keycloak Authorization Code + PKCE `S256`으로 로그인하고 FastAPI는 JWKS
+서명, issuer, audience, 만료 시간과 Realm role을 검증합니다.
+
+`http://localhost:8081`에서 `Keycloak로 로그인`을 누른 뒤 다음 로컬 개발
+계정으로 시험할 수 있습니다.
+
+| 역할 | 아이디 | 비밀번호 |
+| --- | --- | --- |
+| 시스템 관리자 | `admin` | `Admin!2026` |
+| 운영 관리자 | `manager` | `Manager!2026` |
+| 현장 작업자 | `worker` | `Worker!2026` |
+
+Keycloak 관리 콘솔은 `http://localhost:8081/keycloak/admin/`이며 로컬
+bootstrap 관리자는 `keycloak-admin` / `KeycloakAdmin!2026`입니다. 이 값은
+로컬 개발 전용이며 운영 환경에서 재사용하지 않습니다.
+
+Docker Compose 단독 실행은 계속 비활성 로컬 인증 모드를 사용하고, 기존
+AWS 배포 설정은 Cognito 호환 모드를 유지합니다.
 
 Keycloak realm/client/role, 서비스 계정과 EFK 로그 설계는
 [Keycloak 인증 및 EFK 중앙 로그 설계](docs/keycloak-efk-design.md)를
-참조합니다. 이 설계가 실제 실행 환경에 적용되려면 Keycloak 배포, 공통 OIDC
-verifier 변경과 React 로그인 전환 작업이 추가로 필요합니다.
+참조합니다. 운영 AWS EKS에 적용할 때는 TLS, 외부 Secret, 다중 Keycloak
+replica와 RDS PostgreSQL 구성이 추가로 필요합니다.
 
 ## 저장 구조
 
@@ -881,7 +899,7 @@ AXSentinel/
 
 ## 현재 프로토타입 제한사항
 
-- LocalStack EKS의 기본 AI는 호스트 Ollama이고 Cognito는 비활성 모드입니다.
+- LocalStack EKS의 기본 AI는 호스트 Ollama이고 인증은 Keycloak입니다.
   Ollama가 중지되거나 선택한 모델이 설치되지 않으면 AI 분석이 실패하므로
   `ollama serve`와 `ollama list`로 상태를 확인해야 합니다. 임시 mock으로
   되돌리려면 Helm의 `global.aiProvider`를 `mock`으로 지정합니다.
@@ -890,7 +908,7 @@ AXSentinel/
   활성화합니다.
 - DynamoDB 목록 API는 현재 filtered scan을 사용하므로 운영 트래픽 전
   엔터티별 GSI와 cursor pagination이 필요합니다.
-- 센서 수집 API는 사용자 Cognito 인증을 사용합니다. 실제 설비 게이트웨이는
+- 센서 수집 API는 현재 사용자 OIDC 인증을 사용합니다. 실제 설비 게이트웨이는
   IoT Core, mTLS 또는 전용 machine identity 방식으로 분리해야 합니다.
 - `/metrics`는 각 서비스에서 노출하지만 Prometheus 서버·Grafana 대시보드와
   경보 규칙은 운영 환경에 별도로 설치해야 합니다.

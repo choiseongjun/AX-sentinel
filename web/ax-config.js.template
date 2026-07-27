@@ -2,4 +2,6 @@ window.AX_CONFIG = {
   authMode: "${AUTH_MODE}",
   cognitoIssuer: "${COGNITO_ISSUER}",
   cognitoClientId: "${COGNITO_CLIENT_ID}",
+  oidcIssuer: "${OIDC_ISSUER}",
+  oidcClientId: "${OIDC_CLIENT_ID}",
 };

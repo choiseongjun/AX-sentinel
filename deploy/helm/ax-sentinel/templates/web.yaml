@@ -40,6 +40,17 @@ spec:
             - name: COGNITO_CLIENT_ID
               value: ""
             {{- end }}
+            {{- if eq .Values.global.authMode "keycloak" }}
+            - name: OIDC_ISSUER
+              value: {{ printf "%s/realms/%s" (required "keycloak.externalBaseUrl is required with Keycloak" .Values.keycloak.externalBaseUrl) .Values.keycloak.realm | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ required "keycloak.clientId is required with Keycloak" .Values.keycloak.clientId | quote }}
+            {{- else }}
+            - name: OIDC_ISSUER
+              value: ""
+            - name: OIDC_CLIENT_ID
+              value: ""
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /

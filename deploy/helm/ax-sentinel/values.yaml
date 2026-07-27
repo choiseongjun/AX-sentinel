@@ -85,6 +85,19 @@ redis:
   enabled: false
   image: redis:7-alpine
 
+keycloak:
+  enabled: false
+  image: quay.io/keycloak/keycloak:26.7.0
+  postgresImage: postgres:17-alpine
+  adminUsername: keycloak-admin
+  adminPassword: ""
+  databasePassword: ""
+  databaseStorage: 2Gi
+  realm: ax-sentinel
+  clientId: ax-sentinel-web
+  externalBaseUrl: ""
+  internalBaseUrl: http://keycloak:8080/keycloak
+
 resources:
   requests:
     cpu: 100m

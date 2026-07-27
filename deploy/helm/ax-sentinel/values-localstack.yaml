@@ -13,7 +13,7 @@ global:
   alertsTopic: axsentinel-alerts
   websocketBroker: redis
   redisUrl: redis://redis:6379/0
-  authMode: disabled
+  authMode: keycloak
   aiProvider: ollama
   ollamaBaseUrl: http://host.docker.internal:11434
   ollamaModel: hoangquan456/qwen3-nothink:4b
@@ -73,3 +73,16 @@ autoscaling:
 
 redis:
   enabled: true
+
+keycloak:
+  enabled: true
+  image: quay.io/keycloak/keycloak:26.7.0
+  postgresImage: postgres:17-alpine
+  adminUsername: keycloak-admin
+  adminPassword: KeycloakAdmin!2026
+  databasePassword: KeycloakDb!2026
+  databaseStorage: 2Gi
+  realm: ax-sentinel
+  clientId: ax-sentinel-web
+  externalBaseUrl: http://localhost:8081/keycloak
+  internalBaseUrl: http://keycloak:8080/keycloak

@@ -13,8 +13,9 @@ AX Sentinel의 목표 MSA 인증은 Amazon Cognito 대신 Keycloak OIDC를 사�
 | Kafka | 서비스 간 업무 이벤트와 비동기 명령 전달 | access/refresh token, 비밀번호, 일반 애플리케이션 로그 |
 | EFK | 애플리케이션·인증·인프라 로그 수집, 검색, 대시보드, 경보 | 센서 원본의 영구 저장, 업무 이벤트의 기준 원장 |
 
-현재 실행 중인 코드는 Cognito 호환 인증과 비활성 로컬 인증 모드를 유지한다.
-이 문서는 Keycloak과 EFK로 전환할 목표 구조이며, 실제 배포 여부와 구분한다.
+LocalStack EKS에는 Keycloak 인증이 구현되어 있다. 기존 AWS Cognito 호환
+모드와 Docker Compose의 비활성 로컬 인증도 유지한다. EFK와 Kafka 부분은
+아직 목표 설계이며 실제 배포 여부와 구분한다.
 
 ## 2. 전체 구조
 
@@ -307,4 +308,3 @@ LocalStack은 AWS API를 에뮬레이션하지만 Keycloak, Kafka와 EFK 자체�
 - Kibana에서 Keycloak 인증, API 오류, Kafka lag, AI timeout과 감사 흐름을
   확인할 수 있다.
 - 고위험 조치는 관리자 승인 없이는 작업 티켓으로 전환되지 않는다.
-

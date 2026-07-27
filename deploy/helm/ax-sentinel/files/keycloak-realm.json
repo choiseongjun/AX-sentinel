@@ -1,0 +1,131 @@
+{
+  "realm": "ax-sentinel",
+  "enabled": true,
+  "displayName": "AX Sentinel",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "bruteForceProtected": true,
+  "roles": {
+    "realm": [
+      {
+        "name": "operator_manager",
+        "description": "장애 분석과 조치안 승인 담당"
+      },
+      {
+        "name": "field_worker",
+        "description": "현장 작업 티켓 수행 담당"
+      },
+      {
+        "name": "system_admin",
+        "description": "AX Sentinel 시스템 관리자"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "ax-sentinel-web",
+      "name": "AX Sentinel Web",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": [
+        "http://localhost:8081/auth/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:8081"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8081/login"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "ax-sentinel audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "ax-sentinel-web",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "System",
+      "lastName": "Administrator",
+      "email": "admin@axsentinel.local",
+      "realmRoles": [
+        "system_admin"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Admin!2026",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "manager",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Operations",
+      "lastName": "Manager",
+      "email": "manager@axsentinel.local",
+      "realmRoles": [
+        "operator_manager"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Manager!2026",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "worker",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Field",
+      "lastName": "Worker",
+      "email": "worker@axsentinel.local",
+      "realmRoles": [
+        "field_worker"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Worker!2026",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

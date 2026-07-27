@@ -6,17 +6,23 @@ declare global {
       authMode?: string;
       cognitoIssuer?: string;
       cognitoClientId?: string;
+      oidcIssuer?: string;
+      oidcClientId?: string;
     };
   }
 }
 
 const config = window.AX_CONFIG ?? {};
-const cognitoEnabled = config.authMode === "cognito";
+const oidcEnabled = config.authMode === "cognito" || config.authMode === "keycloak";
+const authority =
+  config.authMode === "keycloak" ? config.oidcIssuer : config.cognitoIssuer;
+const clientId =
+  config.authMode === "keycloak" ? config.oidcClientId : config.cognitoClientId;
 
-const userManager = cognitoEnabled
+const userManager = oidcEnabled
   ? new UserManager({
-      authority: config.cognitoIssuer!,
-      client_id: config.cognitoClientId!,
+      authority: authority!,
+      client_id: clientId!,
       redirect_uri: `${window.location.origin}/auth/callback`,
       post_logout_redirect_uri: `${window.location.origin}/login`,
       response_type: "code",
@@ -26,8 +32,12 @@ const userManager = cognitoEnabled
     })
   : null;
 
-export function isCognitoEnabled() {
-  return cognitoEnabled;
+export function isOidcEnabled() {
+  return oidcEnabled;
+}
+
+export function authProviderName() {
+  return config.authMode === "keycloak" ? "Keycloak" : "Cognito";
 }
 
 export async function beginSignIn() {
@@ -54,8 +64,14 @@ export async function getAccessToken() {
 }
 
 export function roleFromUser(user: User) {
-  const groups = user.profile["cognito:groups"];
-  const values = Array.isArray(groups) ? groups.map(String) : [];
+  const cognitoGroups = user.profile["cognito:groups"];
+  const realmAccess = user.profile["realm_access"] as
+    | { roles?: unknown[] }
+    | undefined;
+  const values = [
+    ...(Array.isArray(cognitoGroups) ? cognitoGroups.map(String) : []),
+    ...(Array.isArray(realmAccess?.roles) ? realmAccess.roles.map(String) : []),
+  ];
   if (values.includes("system_admin")) return "system_admin";
   if (values.includes("operator_manager")) return "operator_manager";
   if (values.includes("field_worker")) return "field_worker";

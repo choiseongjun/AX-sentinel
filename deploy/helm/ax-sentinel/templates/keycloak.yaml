@@ -1,0 +1,218 @@
+{{- if .Values.keycloak.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-local-credentials
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  admin-password: {{ .Values.keycloak.adminPassword | quote }}
+  database-password: {{ .Values.keycloak.databasePassword | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+data:
+  ax-sentinel-realm.json: |
+{{ .Files.Get "files/keycloak-realm.json" | indent 4 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: keycloak-postgres
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.keycloak.databaseStorage | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-postgres
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/name: keycloak-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak-postgres
+        app.kubernetes.io/part-of: ax-sentinel
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.keycloak.postgresImage | quote }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: keycloak
+            - name: POSTGRES_USER
+              value: keycloak
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-local-credentials
+                  key: database-password
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "keycloak", "-d", "keycloak"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "keycloak", "-d", "keycloak"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: keycloak-postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-postgres
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: keycloak-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/name: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak
+        app.kubernetes.io/part-of: ax-sentinel
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ .Values.keycloak.postgresImage | quote }}
+          command:
+            - sh
+            - -c
+            - until pg_isready -h keycloak-postgres -U keycloak -d keycloak; do sleep 2; done
+      containers:
+        - name: keycloak
+          image: {{ .Values.keycloak.image | quote }}
+          imagePullPolicy: IfNotPresent
+          args: ["start-dev", "--import-realm"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://keycloak-postgres:5432/keycloak
+            - name: KC_DB_USERNAME
+              value: keycloak
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-local-credentials
+                  key: database-password
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: {{ .Values.keycloak.adminUsername | quote }}
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-local-credentials
+                  key: admin-password
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            - name: KC_HTTP_RELATIVE_PATH
+              value: "/keycloak"
+            - name: KC_HOSTNAME
+              value: {{ .Values.keycloak.externalBaseUrl | quote }}
+            - name: KC_PROXY_HEADERS
+              value: xforwarded
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_METRICS_ENABLED
+              value: "true"
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import/ax-sentinel-realm.json
+              subPath: ax-sentinel-realm.json
+              readOnly: true
+          resources:
+            requests:
+              cpu: 150m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: realm
+          configMap:
+            name: keycloak-realm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  labels:
+    {{- include "ax-sentinel.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}

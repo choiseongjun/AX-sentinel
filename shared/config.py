@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     auth_mode: str = "disabled"
     cognito_user_pool_id: str | None = None
     cognito_client_id: str | None = None
+    oidc_issuer: str | None = None
+    oidc_jwks_url: str | None = None
+    oidc_client_id: str | None = None
     ai_provider: str = "mock"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "hoangquan456/qwen3-nothink:4b"

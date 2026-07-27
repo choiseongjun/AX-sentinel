@@ -4,6 +4,21 @@
 검증하는 절차를 설명한다. 기본 접속 주소는
 <http://localhost:8081>이다.
 
+## LocalStack EKS Keycloak 로그인
+
+`http://localhost:8081`을 열고 `Keycloak로 로그인`을 누른다. Keycloak
+로그인 화면에서 다음 로컬 개발 계정을 사용한다.
+
+| 역할 | 아이디 | 비밀번호 | 주요 시험 |
+| --- | --- | --- | --- |
+| 시스템 관리자 | `admin` | `Admin!2026` | 전체 메뉴와 관리 기능 |
+| 운영 관리자 | `manager` | `Manager!2026` | AI 분석과 조치안 승인·반려 |
+| 현장 작업자 | `worker` | `Worker!2026` | 작업 체크리스트·증빙·복구 완료 |
+
+좌측 하단 사용자 카드를 누르면 Keycloak 로그아웃을 거쳐 다른 역할로 다시
+로그인할 수 있다. 로컬 계정과 비밀번호는 개발 전용이며 운영 환경에서
+사용하지 않는다.
+
 ## 1. 사전 상태 확인
 
 PowerShell에서 프로젝트 디렉터리로 이동한다.
@@ -146,17 +161,29 @@ npm --prefix web run build
 
 ```powershell
 $base = "http://localhost:8081"
+$tokenResponse = Invoke-RestMethod `
+  -Method Post `
+  -Uri "$base/keycloak/realms/ax-sentinel/protocol/openid-connect/token" `
+  -ContentType "application/x-www-form-urlencoded" `
+  -Body @{
+    grant_type = "password"
+    client_id  = "ax-sentinel-web"
+    username   = "admin"
+    password   = "Admin!2026"
+    scope      = "openid"
+  }
+$headers = @{ Authorization = "Bearer $($tokenResponse.access_token)" }
 
-Invoke-RestMethod "$base/api/v1/incidents"
-Invoke-RestMethod "$base/api/v1/expert-reviews"
-Invoke-RestMethod "$base/api/v1/work-orders"
-Invoke-RestMethod "$base/api/v1/metrics/summary"
-Invoke-RestMethod "$base/api/v1/events/worker/status"
+Invoke-RestMethod "$base/api/v1/incidents" -Headers $headers
+Invoke-RestMethod "$base/api/v1/expert-reviews" -Headers $headers
+Invoke-RestMethod "$base/api/v1/work-orders" -Headers $headers
+Invoke-RestMethod "$base/api/v1/metrics/summary" -Headers $headers
+Invoke-RestMethod "$base/api/v1/events/worker/status" -Headers $headers
 ```
 
 ## 7. 실제 AWS Cognito·Bedrock 시험
 
-LocalStack EKS의 기본 AI는 호스트 Ollama이며 Cognito는 비활성화되어 있다.
+LocalStack EKS의 기본 AI는 호스트 Ollama이며 인증은 Keycloak이 담당한다.
 실제 AWS Cognito와 Bedrock은 유효한 개발용 AWS 자격 증명과 Terraform
 출력값을 현재 PowerShell 세션에 설정한 후 실행한다.
 

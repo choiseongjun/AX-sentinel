@@ -86,10 +86,11 @@ GSIs before production traffic.
 | work-order-service | Approval, tickets and field checklist | `/api/v1/approvals` |
 | metrics-service | Accuracy and usefulness feedback | `/api/v1/metrics` |
 
-Amazon Cognito provides OIDC Authorization Code + PKCE authentication for the
-web client. FastAPI middleware validates access-token signatures and claims
-against Cognito JWKS. Authorization roles are `operator_manager`,
-`field_worker`, and `system_admin`, mapped from Cognito groups.
+LocalStack EKS uses Keycloak OIDC Authorization Code + PKCE authentication.
+FastAPI validates Keycloak access-token signature, issuer, audience, expiration
+and Realm roles against JWKS. The AWS-compatible mode continues to support
+Cognito groups. Authorization roles are `operator_manager`, `field_worker`, and
+`system_admin`.
 
 ## Safety state machine
 
@@ -121,7 +122,7 @@ Hard invariants:
 1. Terraform provisions network, EKS, ECR and AWS data services.
 2. CI builds one image per service and pushes immutable tags to ECR.
 3. Helm deploys all services to the `ax-sentinel` namespace.
-4. Cognito/OIDC and role authorization are configured through Helm values.
+4. Keycloak/OIDC locally, or Cognito/OIDC on AWS, is configured through Helm values.
 5. Bedrock Converse analysis and Knowledge Bases retrieval use Pod Identity.
 6. Production rollout still requires AWS provisioning, image publication,
    observability, backups, and audit-retention policy review.

@@ -70,6 +70,14 @@ spec:
             - name: COGNITO_CLIENT_ID
               value: {{ required "global.cognitoClientId is required when deploying with Cognito" $.Values.global.cognitoClientId | quote }}
             {{- end }}
+            {{- if eq $.Values.global.authMode "keycloak" }}
+            - name: OIDC_ISSUER
+              value: {{ printf "%s/realms/%s" (required "keycloak.externalBaseUrl is required with Keycloak" $.Values.keycloak.externalBaseUrl) $.Values.keycloak.realm | quote }}
+            - name: OIDC_JWKS_URL
+              value: {{ printf "%s/realms/%s/protocol/openid-connect/certs" (required "keycloak.internalBaseUrl is required with Keycloak" $.Values.keycloak.internalBaseUrl) $.Values.keycloak.realm | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ required "keycloak.clientId is required with Keycloak" $.Values.keycloak.clientId | quote }}
+            {{- end }}
             - name: AI_PROVIDER
               value: {{ $.Values.global.aiProvider | quote }}
             {{- if eq $.Values.global.aiProvider "ollama" }}

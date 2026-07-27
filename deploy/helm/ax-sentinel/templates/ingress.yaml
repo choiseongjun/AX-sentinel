@@ -14,6 +14,15 @@ spec:
     - host: {{ .Values.ingress.host }}
       http:
         paths:
+          {{- if .Values.keycloak.enabled }}
+          - path: /keycloak
+            pathType: Prefix
+            backend:
+              service:
+                name: keycloak
+                port:
+                  name: http
+          {{- end }}
           - path: /
             pathType: Prefix
             backend:

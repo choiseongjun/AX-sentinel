@@ -48,23 +48,74 @@ class CognitoTokenVerifier:
         return principal_from_claims(claims)
 
 
+class OidcTokenVerifier:
+    def __init__(self, *, issuer: str, jwks_url: str, client_id: str) -> None:
+        self._issuer = issuer.rstrip("/")
+        self._client_id = client_id
+        self._jwks_client = PyJWKClient(
+            jwks_url,
+            cache_keys=True,
+            lifespan=3600,
+        )
+
+    def verify(self, token: str) -> Principal:
+        signing_key = self._jwks_client.get_signing_key_from_jwt(token)
+        claims: dict[str, Any] = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            issuer=self._issuer,
+            audience=self._client_id,
+        )
+        return principal_from_claims(claims)
+
+
 def principal_from_claims(claims: dict[str, Any]) -> Principal:
     known_roles = {role.value: role for role in Role}
+    realm_access = claims.get("realm_access", {})
+    keycloak_roles = (
+        realm_access.get("roles", [])
+        if isinstance(realm_access, dict)
+        else []
+    )
+    claimed_roles = [
+        *claims.get("cognito:groups", []),
+        *keycloak_roles,
+    ]
     roles = frozenset(
         known_roles[group]
-        for group in claims.get("cognito:groups", [])
+        for group in claimed_roles
         if group in known_roles
     )
     return Principal(
         subject=str(claims["sub"]),
-        username=str(claims.get("username", claims["sub"])),
+        username=str(
+            claims.get(
+                "preferred_username",
+                claims.get("username", claims["sub"]),
+            )
+        ),
         roles=roles,
     )
 
 
 @lru_cache
-def get_token_verifier() -> CognitoTokenVerifier:
+def get_token_verifier() -> CognitoTokenVerifier | OidcTokenVerifier:
     settings = get_settings()
+    if settings.auth_mode == "keycloak":
+        if (
+            not settings.oidc_issuer
+            or not settings.oidc_jwks_url
+            or not settings.oidc_client_id
+        ):
+            raise RuntimeError("Keycloak OIDC authentication settings are incomplete")
+        return OidcTokenVerifier(
+            issuer=settings.oidc_issuer,
+            jwks_url=settings.oidc_jwks_url,
+            client_id=settings.oidc_client_id,
+        )
+    if settings.auth_mode != "cognito":
+        raise RuntimeError(f"Unsupported authentication mode: {settings.auth_mode}")
     if not settings.cognito_user_pool_id or not settings.cognito_client_id:
         raise RuntimeError("Cognito authentication settings are incomplete")
     return CognitoTokenVerifier(
