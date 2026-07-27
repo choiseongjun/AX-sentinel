@@ -121,9 +121,10 @@ Invoke-RestMethod `
 ```
 
 같은 작업은 웹의 `AI 운영 지표` 화면에서 `평가 실행`을 눌러 수행할 수 있다.
-샘플 mock 분석기의 기준 결과는 원인 후보 정확도 100%, 문서 검색 적중률
-100%, 해결 시간 감소율 약 44%이다. 이 값은 실제 Bedrock 품질 지표가 아닌
-로컬 회귀 테스트 결과다.
+Ollama 분석은 생성형 모델을 사용하므로 원인 후보 정확도는 실행마다 달라질
+수 있다. 문서 검색 적중률과 해결 시간 감소율은 같은 데이터셋에서 반복
+검증할 수 있다. 결정론적인 회귀 검사가 필요하면 `AI_PROVIDER=mock`으로
+전환한다.
 
 ## 5. 자동화 테스트
 
@@ -155,8 +156,9 @@ Invoke-RestMethod "$base/api/v1/events/worker/status"
 
 ## 7. 실제 AWS Cognito·Bedrock 시험
 
-LocalStack에서는 Cognito와 Bedrock이 mock으로 동작한다. 유효한 개발용 AWS
-자격 증명과 Terraform 출력값을 현재 PowerShell 세션에 설정한 후 실행한다.
+LocalStack EKS의 기본 AI는 호스트 Ollama이며 Cognito는 비활성화되어 있다.
+실제 AWS Cognito와 Bedrock은 유효한 개발용 AWS 자격 증명과 Terraform
+출력값을 현재 PowerShell 세션에 설정한 후 실행한다.
 
 ```powershell
 Remove-Item Env:AWS_ENDPOINT_URL -ErrorAction SilentlyContinue
@@ -174,7 +176,31 @@ $env:BEDROCK_DATA_SOURCE_ID = "<data-source-id>"
 검증하려면 `COGNITO_TEST_USERNAME`과 `COGNITO_TEST_PASSWORD`를 현재 셸에만
 설정한다. 비밀번호와 토큰은 저장소에 기록하지 않는다.
 
-## 8. 문제 해결
+## 8. Ollama 상태 확인
+
+```powershell
+ollama --version
+ollama list
+Invoke-RestMethod http://localhost:11434/api/tags
+```
+
+기본 모델이 없으면 다음 명령으로 설치한다.
+
+```powershell
+ollama pull hoangquan456/qwen3-nothink:4b
+```
+
+LocalStack EKS의 AI Pod에서 호스트 Ollama 연결을 확인한다.
+
+```powershell
+kubectl exec -n ax-sentinel deployment/ai-analysis-service -- `
+  python -c "import urllib.request; print(urllib.request.urlopen('http://host.docker.internal:11434/api/tags').status)"
+```
+
+장애 분석 결과의 `분석 감사 정보`에 제공자 `ollama`, 모델
+`hoangquan456/qwen3-nothink:4b`가 표시되면 정상이다.
+
+## 9. 문제 해결
 
 ### Windows PowerShell 5.1에서 한글 응답이 깨지는 경우
 

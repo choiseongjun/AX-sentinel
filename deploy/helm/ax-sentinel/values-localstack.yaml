@@ -14,7 +14,10 @@ global:
   websocketBroker: redis
   redisUrl: redis://redis:6379/0
   authMode: disabled
-  aiProvider: mock
+  aiProvider: ollama
+  ollamaBaseUrl: http://host.docker.internal:11434
+  ollamaModel: hoangquan456/qwen3-nothink:4b
+  ollamaTimeoutSeconds: 180
   ragProvider: local
 
 services:

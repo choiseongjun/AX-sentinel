@@ -17,6 +17,9 @@ global:
   cognitoUserPoolId: ""
   cognitoClientId: ""
   aiProvider: bedrock
+  ollamaBaseUrl: http://host.docker.internal:11434
+  ollamaModel: hoangquan456/qwen3-nothink:4b
+  ollamaTimeoutSeconds: 180
   bedrockModelId: ""
   bedrockGuardrailId: ""
   bedrockGuardrailVersion: ""

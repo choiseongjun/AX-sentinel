@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     cognito_user_pool_id: str | None = None
     cognito_client_id: str | None = None
     ai_provider: str = "mock"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "hoangquan456/qwen3-nothink:4b"
+    ollama_timeout_seconds: float = 180
     bedrock_model_id: str | None = None
     bedrock_guardrail_id: str | None = None
     bedrock_guardrail_version: str | None = None

@@ -11,6 +11,12 @@ $ClusterName = "ax-sentinel-local"
 $NodeGroupName = "ax-sentinel-workers"
 $Namespace = "ax-sentinel"
 $Registry = "000000000000.dkr.ecr.us-east-1.localhost.localstack.cloud:4566"
+$OllamaModel = if ($env:OLLAMA_MODEL) {
+    $env:OLLAMA_MODEL
+}
+else {
+    "hoangquan456/qwen3-nothink:4b"
+}
 $Services = @(
     "asset-service",
     "incident-service",
@@ -91,6 +97,18 @@ try {
 
     if (-not $env:LOCALSTACK_AUTH_TOKEN) {
         throw "Set LOCALSTACK_AUTH_TOKEN in the current shell before deploying."
+    }
+
+    try {
+        $ollamaTags = Invoke-RestMethod `
+            -Uri "http://localhost:11434/api/tags" `
+            -TimeoutSec 5
+    }
+    catch {
+        throw "Ollama is not reachable at http://localhost:11434. Start Ollama before deploying."
+    }
+    if ($OllamaModel -notin @($ollamaTags.models | ForEach-Object { $_.name })) {
+        throw "Ollama model '$OllamaModel' is not installed. Run: ollama pull $OllamaModel"
     }
 
     docker compose up -d --wait localstack

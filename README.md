@@ -17,6 +17,7 @@ AI는 설비를 직접 조작하지 않습니다. 분석 결과는 운영 관리
 - 센서 데이터 수신, DynamoDB 저장 및 WebSocket 실시간 모니터링
 - 임계치 초과 자동 감지, 가상 장애 생성과 장애 상태 관리
 - Amazon Bedrock Converse 기반 장애 원인 및 조치안 생성
+- Ollama 기반 로컬 한국어 장애 분석과 JSON Schema 구조화 출력
 - S3 문서 저장과 Bedrock Knowledge Bases 기반 RAG
 - SQS 도메인 이벤트 Worker, 3회 재시도·DLQ, SNS 위험 경보와 Redis Pub/Sub
   다중 Pod fan-out
@@ -117,7 +118,7 @@ EC2 Managed Node Group은 Pod가 공유하는 컴퓨팅 기반입니다.
 | --- | --- |
 | Web | React 19, TypeScript, Vite, Nginx, oidc-client-ts |
 | Backend | Python 3.12, FastAPI, Pydantic, Uvicorn |
-| AI | Amazon Bedrock Converse API, 선택적 Bedrock Guardrail |
+| AI | 로컬 Ollama, Amazon Bedrock Converse API, 선택적 Bedrock Guardrail |
 | RAG | Amazon Bedrock Knowledge Bases, S3 Vectors, Amazon S3 |
 | Data | Amazon DynamoDB single-table, S3, SQS, SNS, Redis Pub/Sub |
 | Auth | Amazon Cognito, OIDC Authorization Code + PKCE, JWT/JWKS |
@@ -290,7 +291,7 @@ EKS의 Incident API로 센서 데이터와 로그를 1초 간격으로 계속 �
 | 기능 | 로컬 Docker Compose | AWS/EKS |
 | --- | --- | --- |
 | 인증 | 비활성화, 화면에서 역할 선택 | Cognito OIDC + PKCE |
-| AI 분석 | 결정론적인 mock 분석기 | Bedrock Converse |
+| AI 분석 | Ollama `qwen3-nothink:4b` | Bedrock Converse |
 | RAG | DynamoDB 저장 텍스트 검색 | Bedrock Knowledge Bases |
 | 데이터 | LocalStack DynamoDB/S3 | AWS DynamoDB/S3 |
 | 센서 갱신 | HTTP 수집 + WebSocket/Redis push | HTTP 수집 + WebSocket/Redis push |
@@ -316,7 +317,10 @@ Copy-Item .env.example .env
 | `AUTH_MODE` | `disabled` | `disabled` 또는 `cognito` |
 | `COGNITO_USER_POOL_ID` | 없음 | Cognito User Pool ID |
 | `COGNITO_CLIENT_ID` | 없음 | Cognito Web Client ID |
-| `AI_PROVIDER` | `mock` | `mock` 또는 `bedrock` |
+| `AI_PROVIDER` | `ollama` | `ollama`, `mock` 또는 `bedrock` |
+| `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama API 주소 |
+| `OLLAMA_MODEL` | `hoangquan456/qwen3-nothink:4b` | 로컬 분석 모델 |
+| `OLLAMA_TIMEOUT_SECONDS` | `180` | Ollama 분석 제한 시간 |
 | `BEDROCK_MODEL_ID` | 없음 | Bedrock 모델 또는 inference profile ID |
 | `BEDROCK_GUARDRAIL_ID` | 없음 | 선택적 Guardrail ID |
 | `BEDROCK_GUARDRAIL_VERSION` | 없음 | Guardrail 버전 |
@@ -335,7 +339,8 @@ Authorization Code + PKCE를 사용하며 client secret을 웹에 포함하지 �
 
 ### 실제 AWS Cognito·Bedrock 통합 점검
 
-LocalStack에서는 Cognito와 Bedrock을 mock으로 실행합니다. 개발용 AWS 계정의
+LocalStack EKS에서는 Cognito를 비활성화하고 AI 분석은 로컬 Ollama를
+사용합니다. 실제 Bedrock 검증은 개발용 AWS 계정의
 유효한 자격 증명과 Terraform 출력값을 환경 변수로 지정하면 읽기 전용 구성
 검사, OIDC discovery/JWKS, 선택적 로그인, Bedrock 호출과 Knowledge Base
 검색까지 한 번에 검증할 수 있습니다. `AWS_ENDPOINT_URL`이 남아 있으면 실제
@@ -601,6 +606,7 @@ python -m venv .venv
 - 분석 감사 메타데이터와 전문가 검토 큐 생성
 - 전문가 검토 완료 메모 강제와 정답 원인 매칭
 - mock 및 Bedrock 분석 결과 구조
+- Ollama JSON Schema 요청과 분석 감사 정보
 - 로컬 문서 RAG 검색
 
 ### React
@@ -765,8 +771,11 @@ AXSentinel/
 
 ## 현재 프로토타입 제한사항
 
-- LocalStack에서 지원하지 않는 Bedrock/Cognito 기능은 mock 또는 비활성
-  모드로 실행됩니다. 실제 AWS에서는 Terraform과 Helm 입력값으로
+- LocalStack EKS의 기본 AI는 호스트 Ollama이고 Cognito는 비활성 모드입니다.
+  Ollama가 중지되거나 선택한 모델이 설치되지 않으면 AI 분석이 실패하므로
+  `ollama serve`와 `ollama list`로 상태를 확인해야 합니다. 임시 mock으로
+  되돌리려면 Helm의 `global.aiProvider`를 `mock`으로 지정합니다.
+  실제 AWS에서는 Terraform과 Helm 입력값으로
   `AI_PROVIDER=bedrock`, `RAG_PROVIDER=bedrock`, `AUTH_MODE=cognito`를
   활성화합니다.
 - DynamoDB 목록 API는 현재 filtered scan을 사용하므로 운영 트래픽 전
