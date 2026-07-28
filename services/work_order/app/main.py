@@ -6,10 +6,10 @@ from uuid import uuid4
 import httpx
 from fastapi import Depends, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
 
 from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
+from shared.concurrency import run_broker, run_database, run_storage
 from shared.config import get_settings
 from shared.dynamodb import get_repository
 from shared.events import get_event_publisher
@@ -66,8 +66,8 @@ async def decide_action_plan(
     ],
 ) -> WorkOrder | ApprovalRecord:
     approval = ApprovalRecord(id=str(uuid4()), **request.model_dump())
-    await run_in_threadpool(get_repository().put, "approval", approval.id, approval)
-    await run_in_threadpool(
+    await run_database(get_repository().put, "approval", approval.id, approval)
+    await run_broker(
         get_event_publisher().publish,
         "approval.decided",
         approval.model_dump(mode="json"),
@@ -95,8 +95,8 @@ async def decide_action_plan(
             "시험 가동 후 정상 복구 확인",
         ],
     )
-    await run_in_threadpool(get_repository().put, "work_order", work_order.id, work_order)
-    await run_in_threadpool(
+    await run_database(get_repository().put, "work_order", work_order.id, work_order)
+    await run_broker(
         get_event_publisher().publish,
         "work_order.created",
         work_order.model_dump(mode="json"),
@@ -112,7 +112,7 @@ async def decide_action_plan(
     tags=["work-orders"],
 )
 async def get_work_order(work_order_id: str) -> WorkOrder:
-    value = await run_in_threadpool(get_repository().get, "work_order", work_order_id)
+    value = await run_database(get_repository().get, "work_order", work_order_id)
     if value is None:
         raise HTTPException(status_code=404, detail="Work order not found")
     return WorkOrder.model_validate(value)
@@ -120,13 +120,13 @@ async def get_work_order(work_order_id: str) -> WorkOrder:
 
 @app.get("/api/v1/work-orders", response_model=list[WorkOrder], tags=["work-orders"])
 async def list_work_orders() -> list[WorkOrder]:
-    values = await run_in_threadpool(get_repository().list, "work_order")
+    values = await run_database(get_repository().list, "work_order")
     return [WorkOrder.model_validate(value) for value in values]
 
 
 @app.get("/api/v1/approvals", response_model=list[ApprovalRecord], tags=["approval"])
 async def list_approvals() -> list[ApprovalRecord]:
-    values = await run_in_threadpool(get_repository().list, "approval")
+    values = await run_database(get_repository().list, "approval")
     return [ApprovalRecord.model_validate(value) for value in values]
 
 
@@ -158,7 +158,7 @@ async def upload_work_evidence(
         Depends(require_roles(Role.FIELD_WORKER, Role.SYSTEM_ADMIN)),
     ],
 ) -> WorkEvidence:
-    value = await run_in_threadpool(get_repository().get, "work_order", work_order_id)
+    value = await run_database(get_repository().get, "work_order", work_order_id)
     if value is None:
         raise HTTPException(status_code=404, detail="Work order not found")
 
@@ -171,7 +171,7 @@ async def upload_work_evidence(
 
     safe_name = PurePosixPath(file.filename or "evidence.jpg").name
     key = f"work-evidence/{work_order_id}/{uuid4()}-{safe_name}"
-    await run_in_threadpool(
+    await run_storage(
         get_document_store().put,
         key=key,
         body=content,
@@ -194,7 +194,7 @@ async def complete_work_order(
         Depends(require_roles(Role.FIELD_WORKER, Role.SYSTEM_ADMIN)),
     ],
 ) -> WorkOrder:
-    value = await run_in_threadpool(get_repository().get, "work_order", work_order_id)
+    value = await run_database(get_repository().get, "work_order", work_order_id)
     if value is None:
         raise HTTPException(status_code=404, detail="Work order not found")
     if not completion.recovery_confirmed:
@@ -214,7 +214,7 @@ async def complete_work_order(
     work_order.actual_cause = completion.actual_cause
     work_order.recovery_confirmed = True
     repository = get_repository()
-    await run_in_threadpool(repository.put, "work_order", work_order.id, work_order)
+    await run_database(repository.put, "work_order", work_order.id, work_order)
     settings = get_settings()
     if settings.incident_service_url:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -226,10 +226,10 @@ async def complete_work_order(
             )
         response.raise_for_status()
     else:
-        incident = await run_in_threadpool(repository.get, "incident", work_order.incident_id)
+        incident = await run_database(repository.get, "incident", work_order.incident_id)
         if incident is not None:
             incident["status"] = "resolved"
-            await run_in_threadpool(
+            await run_database(
                 repository.put,
                 "incident",
                 work_order.incident_id,
@@ -237,7 +237,7 @@ async def complete_work_order(
             )
             if settings.websocket_broker == "redis":
                 await get_realtime_bus().publish("ax-sentinel.incidents", incident)
-    await run_in_threadpool(
+    await run_broker(
         get_event_publisher().publish,
         "work_order.completed",
         work_order.model_dump(mode="json"),

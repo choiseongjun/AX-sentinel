@@ -11,10 +11,10 @@ from fastapi import Depends, Query
 from kafka import KafkaConsumer, KafkaProducer, TopicPartition
 from prometheus_client import Counter
 from pydantic import BaseModel, ValidationError
-from starlette.concurrency import run_in_threadpool
 
 from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
+from shared.concurrency import run_broker, run_database
 from shared.config import get_settings
 from shared.dynamodb import DynamoRepository, get_repository
 from shared.events import KAFKA_DLQ_TOPIC, KAFKA_TOPICS, EventEnvelope
@@ -122,7 +122,7 @@ class EventWorker:
         return self._task is not None and not self._task.done()
 
     async def start(self) -> None:
-        self._queue_url = await run_in_threadpool(
+        self._queue_url = await run_broker(
             lambda: self._sqs.get_queue_url(QueueName=self._queue_name)["QueueUrl"]
         )
         self._stopping.clear()
@@ -155,13 +155,13 @@ class EventWorker:
             producer=envelope.producer,
             correlation_id=envelope.correlation_id,
         )
-        await run_in_threadpool(
+        await run_database(
             self._repository.put,
             "processed_event",
             envelope.event_id,
             event,
         )
-        await run_in_threadpool(
+        await run_broker(
             self._sqs.delete_message,
             QueueUrl=self._required_queue_url(),
             ReceiptHandle=receipt_handle,
@@ -169,7 +169,7 @@ class EventWorker:
         EVENTS_PROCESSED.labels("sqs", envelope.event_type, result).inc()
 
     async def status(self) -> WorkerStatus:
-        attributes = await run_in_threadpool(
+        attributes = await run_broker(
             self._sqs.get_queue_attributes,
             QueueUrl=self._required_queue_url(),
             AttributeNames=[
@@ -205,7 +205,7 @@ class EventWorker:
     async def _poll(self) -> None:
         while not self._stopping.is_set():
             try:
-                messages = await run_in_threadpool(self._receive)
+                messages = await run_broker(self._receive)
                 for message in messages:
                     try:
                         await self.process_message(message)
@@ -276,8 +276,8 @@ class KafkaEventWorker:
         )
 
     async def start(self) -> None:
-        self._consumer = await run_in_threadpool(self._create_consumer)
-        self._dlq_producer = await run_in_threadpool(self._create_dlq_producer)
+        self._consumer = await run_broker(self._create_consumer)
+        self._dlq_producer = await run_broker(self._create_dlq_producer)
         self._stopping.clear()
         self._task = asyncio.create_task(self._poll(), name="kafka-domain-event-worker")
 
@@ -289,10 +289,10 @@ class KafkaEventWorker:
                 await self._task
             self._task = None
         if self._consumer is not None:
-            await run_in_threadpool(self._consumer.close)
+            await run_broker(self._consumer.close)
             self._consumer = None
         if self._dlq_producer is not None:
-            await run_in_threadpool(self._dlq_producer.close)
+            await run_broker(self._dlq_producer.close)
             self._dlq_producer = None
 
     def _required_consumer(self) -> KafkaConsumer:
@@ -311,7 +311,7 @@ class KafkaEventWorker:
 
     async def process_record(self, record: Any) -> None:
         envelope = EventEnvelope.model_validate(record.value)
-        existing = await run_in_threadpool(
+        existing = await run_database(
             self._repository.get,
             "processed_event",
             envelope.event_id,
@@ -331,7 +331,7 @@ class KafkaEventWorker:
                 producer=envelope.producer,
                 correlation_id=envelope.correlation_id,
             )
-            await run_in_threadpool(
+            await run_database(
                 self._repository.put,
                 "processed_event",
                 envelope.event_id,
@@ -376,7 +376,7 @@ class KafkaEventWorker:
                 "attempts": attempts,
             },
         ).model_dump(mode="json")
-        await run_in_threadpool(self._publish_dead_letter, dead_letter_id, message)
+        await run_broker(self._publish_dead_letter, dead_letter_id, message)
         processed = ProcessedEvent(
             id=dead_letter_id,
             event_type="event.processing_failed",
@@ -391,7 +391,7 @@ class KafkaEventWorker:
             producer="event-worker",
             correlation_id=message["correlation_id"],
         )
-        await run_in_threadpool(
+        await run_database(
             self._repository.put,
             "processed_event",
             dead_letter_id,
@@ -442,19 +442,19 @@ class KafkaEventWorker:
     async def _poll(self) -> None:
         while not self._stopping.is_set():
             try:
-                batches = await run_in_threadpool(self._poll_records)
+                batches = await run_broker(self._poll_records)
                 processed_any = False
                 batch_failed = False
                 for records in batches.values():
                     for record in records:
                         handled = await self.process_record_with_retry(record)
                         if not handled:
-                            await run_in_threadpool(self._seek_to_record, record)
+                            await run_broker(self._seek_to_record, record)
                             batch_failed = True
                             break
                         processed_any = True
                 if processed_any and not batch_failed:
-                    await run_in_threadpool(self._required_consumer().commit)
+                    await run_broker(self._required_consumer().commit)
                 elif batch_failed:
                     await asyncio.sleep(1)
             except asyncio.CancelledError:
@@ -522,7 +522,7 @@ async def processed_events(
     ],
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[ProcessedEvent]:
-    values = await run_in_threadpool(get_repository().list, "processed_event")
+    values = await run_database(get_repository().list, "processed_event")
     events = [ProcessedEvent.model_validate(value) for value in values]
     events.sort(key=lambda item: item.processed_at, reverse=True)
     return events[:limit]

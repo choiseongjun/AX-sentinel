@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     rag_provider: str = "local"
     bedrock_knowledge_base_id: str | None = None
     bedrock_data_source_id: str | None = None
+    database_thread_workers: int = 16
+    broker_thread_workers: int = 8
+    ai_thread_workers: int = 4
+    authentication_thread_workers: int = 8
+    storage_thread_workers: int = 8
 
 
 @lru_cache

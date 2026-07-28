@@ -8,9 +8,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel
-from starlette.concurrency import run_in_threadpool
 
 from shared.auth import get_token_verifier, local_principal
+from shared.concurrency import run_authentication, shutdown_blocking_executors
 from shared.config import get_settings
 
 HTTP_REQUESTS = Counter(
@@ -46,6 +46,7 @@ def create_app(
         finally:
             if shutdown is not None:
                 await shutdown()
+            shutdown_blocking_executors()
 
     app = FastAPI(
         title=f"AX Sentinel {service_name}",
@@ -92,7 +93,7 @@ def create_app(
             )
 
         try:
-            request.state.principal = await run_in_threadpool(
+            request.state.principal = await run_authentication(
                 get_token_verifier().verify,
                 token,
             )

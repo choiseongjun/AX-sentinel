@@ -4,10 +4,10 @@ from uuid import uuid4
 
 from fastapi import Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
 
 from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
+from shared.concurrency import run_database
 from shared.dynamodb import get_repository
 
 app = create_app("asset-service")
@@ -38,7 +38,7 @@ class MaintenanceRecord(MaintenanceRecordRequest):
 
 @app.get("/api/v1/equipment", response_model=list[Equipment], tags=["equipment"])
 async def list_equipment() -> list[Equipment]:
-    values = await run_in_threadpool(get_repository().list, "equipment")
+    values = await run_database(get_repository().list, "equipment")
     if not values:
         seed = Equipment(
             id="PRESS-001",
@@ -48,17 +48,17 @@ async def list_equipment() -> list[Equipment]:
             status="warning",
             last_seen_at=datetime.now(UTC),
         )
-        await run_in_threadpool(get_repository().put, "equipment", seed.id, seed)
+        await run_database(get_repository().put, "equipment", seed.id, seed)
         return [seed]
     return [Equipment.model_validate(value) for value in values]
 
 
 @app.get("/api/v1/equipment/{equipment_id}", response_model=Equipment, tags=["equipment"])
 async def get_equipment(equipment_id: str) -> Equipment:
-    value = await run_in_threadpool(get_repository().get, "equipment", equipment_id)
+    value = await run_database(get_repository().get, "equipment", equipment_id)
     if value is None and equipment_id == "PRESS-001":
         await list_equipment()
-        value = await run_in_threadpool(get_repository().get, "equipment", equipment_id)
+        value = await run_database(get_repository().get, "equipment", equipment_id)
     if value is None:
         raise HTTPException(status_code=404, detail="Equipment not found")
     return Equipment.model_validate(value)
@@ -84,7 +84,7 @@ async def create_maintenance_record(
         equipment_id=equipment_id,
         **request.model_dump(),
     )
-    await run_in_threadpool(get_repository().put, "maintenance", record.id, record)
+    await run_database(get_repository().put, "maintenance", record.id, record)
     return record
 
 
@@ -94,7 +94,7 @@ async def create_maintenance_record(
     tags=["maintenance"],
 )
 async def list_maintenance_records(equipment_id: str) -> list[MaintenanceRecord]:
-    values = await run_in_threadpool(get_repository().list, "maintenance")
+    values = await run_database(get_repository().list, "maintenance")
     records = [
         MaintenanceRecord.model_validate(value)
         for value in values

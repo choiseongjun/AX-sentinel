@@ -7,10 +7,10 @@ from uuid import uuid4
 
 from fastapi import Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel
-from starlette.concurrency import run_in_threadpool
 
 from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
+from shared.concurrency import run_ai, run_broker, run_database, run_storage
 from shared.dynamodb import get_repository
 from shared.events import get_event_publisher
 from shared.object_store import get_document_store
@@ -65,7 +65,7 @@ async def upload_document(
         version=f"sha256:{hashlib.sha256(content).hexdigest()}",
         uploaded_at=datetime.now(UTC),
     )
-    await run_in_threadpool(
+    await run_storage(
         get_document_store().put,
         key=s3_key,
         body=content,
@@ -78,8 +78,8 @@ async def upload_document(
         else ""
     )
     record = document.model_dump(mode="json") | {"search_text": search_text}
-    await run_in_threadpool(get_repository().put, "document", document.id, record)
-    await run_in_threadpool(
+    await run_database(get_repository().put, "document", document.id, record)
+    await run_broker(
         get_event_publisher().publish,
         "document.registered",
         document.model_dump(mode="json"),
@@ -91,7 +91,7 @@ async def upload_document(
 
 @app.get("/api/v1/documents/by-id/{document_id}", response_model=Document, tags=["documents"])
 async def get_document(document_id: str) -> Document:
-    value = await run_in_threadpool(get_repository().get, "document", document_id)
+    value = await run_database(get_repository().get, "document", document_id)
     if value is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return Document.model_validate(value)
@@ -103,7 +103,7 @@ async def get_document(document_id: str) -> Document:
     tags=["documents"],
 )
 async def search_documents(q: str, limit: int = 5) -> list[RetrievedChunk]:
-    return await run_in_threadpool(get_retriever().retrieve, q, min(max(limit, 1), 20))
+    return await run_ai(get_retriever().retrieve, q, min(max(limit, 1), 20))
 
 
 class IngestionJobAccepted(BaseModel):
@@ -124,7 +124,7 @@ async def sync_documents(
     ],
 ) -> IngestionJobAccepted:
     try:
-        job = await run_in_threadpool(start_ingestion_job)
+        job = await run_ai(start_ingestion_job)
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return IngestionJobAccepted(

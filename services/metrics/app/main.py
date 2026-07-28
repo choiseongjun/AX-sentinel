@@ -5,10 +5,10 @@ from uuid import uuid4
 import httpx
 from fastapi import Depends, Request
 from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
 
 from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
+from shared.concurrency import run_broker, run_database
 from shared.config import get_settings
 from shared.dynamodb import get_repository
 from shared.events import get_event_publisher
@@ -38,8 +38,8 @@ async def record_feedback(
     ],
 ) -> FeedbackAccepted:
     feedback_id = str(uuid4())
-    await run_in_threadpool(get_repository().put, "feedback", feedback_id, feedback)
-    await run_in_threadpool(
+    await run_database(get_repository().put, "feedback", feedback_id, feedback)
+    await run_broker(
         get_event_publisher().publish,
         "feedback.submitted",
         {"id": feedback_id, **feedback.model_dump(mode="json")},
@@ -52,7 +52,7 @@ async def record_feedback(
 @app.get("/api/v1/metrics/summary", tags=["ai-operations"])
 async def metrics_summary(http_request: Request) -> dict[str, float | int]:
     repository = get_repository()
-    feedback_items = await run_in_threadpool(repository.list, "feedback")
+    feedback_items = await run_database(repository.list, "feedback")
     settings = get_settings()
     if settings.analysis_service_url and settings.work_order_service_url:
         headers = {"Authorization": http_request.headers.get("Authorization", "")}
@@ -77,9 +77,9 @@ async def metrics_summary(http_request: Request) -> dict[str, float | int]:
         approvals = approvals_response.json()
         evaluation_runs = evaluations_response.json()
     else:
-        analyses = await run_in_threadpool(repository.list, "analysis")
-        approvals = await run_in_threadpool(repository.list, "approval")
-        evaluation_runs = await run_in_threadpool(repository.list, "evaluation_run")
+        analyses = await run_database(repository.list, "analysis")
+        approvals = await run_database(repository.list, "approval")
+        evaluation_runs = await run_database(repository.list, "evaluation_run")
     feedback_count = len(feedback_items)
     approved_count = sum(
         item.get("decision") in {"approve", "approve_with_changes"}

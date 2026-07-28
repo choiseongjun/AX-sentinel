@@ -31,6 +31,11 @@ global:
   ragProvider: bedrock
   bedrockKnowledgeBaseId: ""
   bedrockDataSourceId: ""
+  databaseThreadWorkers: 16
+  brokerThreadWorkers: 8
+  aiThreadWorkers: 4
+  authenticationThreadWorkers: 8
+  storageThreadWorkers: 8
 
 services:
   - name: asset-service

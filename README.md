@@ -13,6 +13,7 @@ AI는 설비를 직접 조작하지 않습니다. 분석 결과는 운영 관리
 ## 현재 구현 범위
 
 - Python 3.12 및 FastAPI 기반 마이크로서비스 7개
+- FastAPI 이벤트 루프와 DB·브로커·AI·인증·스토리지 전용 thread pool 분리
 - React 19, TypeScript, Vite 기반 운영 웹 콘솔
 - 센서 데이터 수신, DynamoDB 저장 및 WebSocket 실시간 모니터링
 - 임계치 초과 자동 감지, 가상 장애 생성과 장애 상태 관리
@@ -42,7 +43,7 @@ AI는 설비를 직접 조작하지 않습니다. 분석 결과는 운영 관리
 | Kafka 흐름 | telemetry 누적 63건, Event Worker consumer lag 전 partition `0` |
 | 장애 격리 | 잘못된 event envelope를 3회 재시도 후 `ax.events.dlq.v1`로 이동 |
 | Kafka 운영 화면 | Kafbat UI에서 8개 애플리케이션 토픽, 메시지, offset, consumer group과 DLQ 조회 |
-| 자동화 검사 | Python 테스트 31개, Ruff, React/Vite build와 Helm template 통과 |
+| 자동화 검사 | Python 테스트 40개, Ruff, React/Vite build와 Helm template 통과 |
 | GitHub | 주요 구현을 `main`에 순차 반영 |
 
 실시간 시험 중 임계치 초과 신호도 수신했습니다. 동일 설비·센서에 미해결 자동
@@ -411,6 +412,47 @@ WebSocket에서 결과를 즉시 확인할 수 있습니다.
 반환되는 것이 정상입니다. 운영 설비 연동은 사용자 토큰 재사용이 아닌
 IoT Core, mTLS 또는 전용 machine identity로 분리해야 합니다.
 
+### Kafka 초당 수천 건 부하 발생
+
+Kafka 처리량과 consumer lag를 시험하려면 다음 스크립트를 실행합니다. 기본값은
+초당 2,000건이며 종료 시간을 지정하지 않으면 `Ctrl+C`를 누를 때까지 계속
+유효한 `telemetry.received` event envelope를 전송합니다.
+
+실행 전에 Docker Desktop과 LocalStack EKS가 준비되어 있어야 합니다.
+
+```powershell
+docker info
+kubectl get pod kafka-0 -n ax-sentinel
+```
+
+```powershell
+Set-Location C:\pj\AXSentinel
+.\scripts\kafka-load-producer.ps1
+```
+
+처리량, 이상 신호 비율 또는 자동 종료 시간을 변경할 수 있습니다.
+
+```powershell
+.\scripts\kafka-load-producer.ps1 `
+  -RatePerSecond 5000 `
+  -AnomalyPercent 10 `
+  -DurationSeconds 60
+```
+
+이 스크립트는 Kafka에 직접 발행하므로 FastAPI 센서 수집 API와 실시간
+WebSocket 화면을 거치지 않습니다. Kafka UI의 `ax.telemetry.events.v1`,
+Event Worker 처리 이력과 consumer lag를 시험하는 용도입니다. 기본 토픽은
+Event Worker가 각 이벤트를 DynamoDB에 저장하므로 장시간 고부하 시험 시
+lag와 로컬 저장소 사용량이 빠르게 증가할 수 있습니다.
+
+```powershell
+kubectl exec -n ax-sentinel kafka-0 -- `
+  /opt/kafka/bin/kafka-consumer-groups.sh `
+  --bootstrap-server kafka:9092 `
+  --describe `
+  --group ax-sentinel-event-worker-v1
+```
+
 ## 로컬 모드와 AWS 모드
 
 | 기능 | 로컬 Docker Compose | LocalStack EKS | AWS/EKS |
@@ -465,6 +507,11 @@ Copy-Item .env.example .env
 | `SNS_TOPIC` | `axsentinel-alerts` | 경보 토픽 |
 | `WEBSOCKET_BROKER` | `memory` | `memory` 또는 `redis` |
 | `REDIS_URL` | 없음 | Redis Pub/Sub 접속 URL |
+| `DATABASE_THREAD_WORKERS` | `16` | DynamoDB 등 동기 데이터 접근 전용 thread 수 |
+| `BROKER_THREAD_WORKERS` | `8` | Kafka/SQS 동기 I/O 전용 thread 수 |
+| `AI_THREAD_WORKERS` | `4` | Ollama/Bedrock/RAG 동기 호출 전용 thread 수 |
+| `AUTHENTICATION_THREAD_WORKERS` | `8` | JWT/JWKS 검증 전용 thread 수 |
+| `STORAGE_THREAD_WORKERS` | `8` | S3 문서·작업 증빙 I/O 전용 thread 수 |
 
 웹 컨테이너는 시작할 때 `AUTH_MODE`, issuer와 client ID로 `/ax-config.js`를
 생성한다. Cognito와 Keycloak public client 모두 Authorization Code + PKCE를
@@ -925,6 +972,14 @@ AXSentinel/
 ├─ services/
 │  ├─ asset/
 │  ├─ incident/
+│  │  └─ app/
+│  │     ├─ models.py       # 도메인 모델과 상태 전이
+│  │     ├─ ports.py        # Repository/Event/Realtime 포트
+│  │     ├─ adapters.py     # DynamoDB/Kafka 어댑터
+│  │     ├─ application.py  # 유스케이스 조율
+│  │     ├─ realtime.py     # WebSocket/Redis facade
+│  │     ├─ api.py          # FastAPI HTTP/WS 어댑터
+│  │     └─ main.py         # composition root
 │  ├─ ai_analysis/
 │  ├─ knowledge/
 │  ├─ work_order/
@@ -935,8 +990,10 @@ AXSentinel/
 │  ├─ auth.py
 │  ├─ config.py
 │  ├─ dynamodb.py
+│  ├─ events.py
 │  ├─ object_store.py
-│  └─ rag.py
+│  ├─ rag.py
+│  └─ realtime.py
 ├─ web/
 │  ├─ src/
 │  ├─ Dockerfile
