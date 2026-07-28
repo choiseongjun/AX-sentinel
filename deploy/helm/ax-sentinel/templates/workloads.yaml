@@ -52,6 +52,16 @@ spec:
               value: {{ $.Values.global.awsRegion | quote }}
             - name: DYNAMODB_TABLE
               value: {{ required (printf "table is required for %s" .name) .table | quote }}
+            - name: DATABASE_THREAD_WORKERS
+              value: {{ $.Values.global.databaseThreadWorkers | quote }}
+            - name: BROKER_THREAD_WORKERS
+              value: {{ $.Values.global.brokerThreadWorkers | quote }}
+            - name: AI_THREAD_WORKERS
+              value: {{ $.Values.global.aiThreadWorkers | quote }}
+            - name: AUTHENTICATION_THREAD_WORKERS
+              value: {{ $.Values.global.authenticationThreadWorkers | quote }}
+            - name: STORAGE_THREAD_WORKERS
+              value: {{ $.Values.global.storageThreadWorkers | quote }}
             - name: AUTH_MODE
               value: {{ $.Values.global.authMode | quote }}
             - name: ASSET_SERVICE_URL

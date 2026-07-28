@@ -110,6 +110,7 @@ The topics are:
 - `ax.work-order.events.v1`
 - `ax.feedback.events.v1`
 - `ax.audit.events.v1`
+- `ax.events.dlq.v1`
 
 `event-worker` consumes all topics as
 `ax-sentinel-event-worker-v1`, persists the topic, partition, offset, event ID,
@@ -117,6 +118,11 @@ producer, correlation ID, and result, and commits offsets only after the
 processing record is stored. Replayed events are skipped using the persisted
 `event_id`. SQS support remains behind `EVENT_BUS=sqs|dual` for AWS migration
 compatibility; Kafka is the LocalStack EKS default.
+
+Invalid events are retried at the same offset up to three times. The worker then
+stores the failure result, publishes the original value and error metadata to
+`ax.events.dlq.v1`, and commits the source offset so one poison message cannot
+block its partition forever.
 
 The current implementation publishes after the domain write. A transactional
 outbox that atomically stores the domain change and pending event remains the
@@ -132,6 +138,43 @@ next reliability enhancement for broker-outage recovery.
 | knowledge-service | Manuals, past cases and document indexing | `/api/v1/documents` |
 | work-order-service | Approval, tickets and field checklist | `/api/v1/approvals` |
 | metrics-service | Accuracy and usefulness feedback | `/api/v1/metrics` |
+
+### Internal service layering
+
+`incident-service` is the reference implementation for the server-side
+structure:
+
+```text
+FastAPI router (api.py)
+  → application use cases (application.py)
+    → repository/event/realtime ports (ports.py)
+      → DynamoDB/Kafka adapters (adapters.py)
+        → shared infrastructure clients
+```
+
+Domain request, record and state-transition models live in `models.py`.
+`RealtimeHub` encapsulates in-process WebSocket connections and Redis cross-pod
+fan-out. `main.py` is the composition root: it creates concrete adapters,
+injects them into `IncidentApplicationService`, attaches the router and owns
+startup/shutdown wiring.
+
+This applies the Ports and Adapters pattern, Repository pattern, Application
+Service pattern, Dependency Injection and a Realtime Facade. The application
+layer can therefore be tested with in-memory ports without FastAPI, boto3,
+Kafka or Redis. Other services still use their original compact structure and
+will migrate to the same layout incrementally.
+
+### Async API and blocking workload isolation
+
+FastAPI routes remain asynchronous, while synchronous SDK and client calls run
+through `shared/concurrency.py`. Separate bounded `ThreadPoolExecutor` instances
+isolate database, Kafka/SQS, AI/RAG, authentication and object-storage work.
+This prevents a slow model invocation or long broker poll from occupying the
+workers needed for token verification and DynamoDB requests. Python
+`contextvars` are copied into each worker so correlation and request context are
+preserved. Every pool is created lazily and shut down with the application
+lifespan; its worker count can be tuned independently through environment
+variables or Helm values.
 
 LocalStack EKS uses Keycloak OIDC Authorization Code + PKCE authentication.
 FastAPI validates Keycloak access-token signature, issuer, audience, expiration

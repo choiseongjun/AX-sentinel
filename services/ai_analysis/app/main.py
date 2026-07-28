@@ -6,10 +6,10 @@ from uuid import uuid4
 import httpx
 from fastapi import Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
 
 from shared.api import create_app
 from shared.auth import Principal, Role, require_roles
+from shared.concurrency import run_ai, run_broker, run_database
 from shared.config import get_settings
 from shared.dynamodb import get_repository
 from shared.events import get_event_publisher
@@ -148,7 +148,7 @@ async def _analysis_context(
     authorization: str | None = None,
 ) -> tuple[dict[str, Any], list[RetrievedChunk], list[str], dict[str, str]]:
     retrieval_query = f"{request.sensor_summary}\n{request.log_summary}"
-    retrieved_chunks = await run_in_threadpool(
+    retrieved_chunks = await run_ai(
         get_retriever().retrieve,
         retrieval_query,
         5,
@@ -173,8 +173,8 @@ async def _analysis_context(
         equipment = equipment_response.json()
         maintenance_history = maintenance_response.json()
     else:
-        equipment = await run_in_threadpool(repository.get, "equipment", request.equipment_id)
-        maintenance_values = await run_in_threadpool(repository.list, "maintenance")
+        equipment = await run_database(repository.get, "equipment", request.equipment_id)
+        maintenance_values = await run_database(repository.list, "maintenance")
         maintenance_history = [
             value
             for value in maintenance_values
@@ -203,7 +203,7 @@ async def _analysis_context(
                 )
             document = response.json() if response.status_code == 200 else None
         else:
-            document = await run_in_threadpool(repository.get, "document", document_id)
+            document = await run_database(repository.get, "document", document_id)
         document_versions[document_id] = (
             str(document.get("version", "unknown")) if document else "unknown"
         )
@@ -224,7 +224,7 @@ async def _generate(
         request,
         authorization,
     )
-    generated = await run_in_threadpool(get_analysis_engine().analyze, evidence)
+    generated = await run_ai(get_analysis_engine().analyze, evidence)
     engine_audit = generated.pop("_audit", {})
     settings = get_settings()
     audit = AnalysisAudit(
@@ -282,7 +282,7 @@ async def analyze_incident(
         audit=audit,
     )
     repository = get_repository()
-    await run_in_threadpool(repository.put, "analysis", result.id, result)
+    await run_database(repository.put, "analysis", result.id, result)
     if result.expert_review_required:
         now = datetime.now(UTC)
         review = ExpertReviewCase(
@@ -296,8 +296,8 @@ async def analyze_incident(
             created_at=now,
             updated_at=now,
         )
-        await run_in_threadpool(repository.put, "expert_review", review.id, review)
-    await run_in_threadpool(
+        await run_database(repository.put, "expert_review", review.id, review)
+    await run_broker(
         get_event_publisher().publish,
         "analysis.completed",
         result.model_dump(mode="json"),
@@ -309,7 +309,7 @@ async def analyze_incident(
 
 @app.get("/api/v1/analyses/{analysis_id}", response_model=AnalysisResult, tags=["analysis"])
 async def get_analysis(analysis_id: str) -> AnalysisResult:
-    value = await run_in_threadpool(get_repository().get, "analysis", analysis_id)
+    value = await run_database(get_repository().get, "analysis", analysis_id)
     if value is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
     return AnalysisResult.model_validate(value)
@@ -317,7 +317,7 @@ async def get_analysis(analysis_id: str) -> AnalysisResult:
 
 @app.get("/api/v1/analyses", response_model=list[AnalysisResult], tags=["analysis"])
 async def list_analyses() -> list[AnalysisResult]:
-    values = await run_in_threadpool(get_repository().list, "analysis")
+    values = await run_database(get_repository().list, "analysis")
     return [AnalysisResult.model_validate(value) for value in values]
 
 
@@ -325,7 +325,7 @@ async def list_analyses() -> list[AnalysisResult]:
 async def list_expert_reviews(
     review_status: Annotated[ReviewStatus | None, Query(alias="status")] = None,
 ) -> list[ExpertReviewCase]:
-    values = await run_in_threadpool(get_repository().list, "expert_review")
+    values = await run_database(get_repository().list, "expert_review")
     reviews = [ExpertReviewCase.model_validate(value) for value in values]
     if review_status is not None:
         reviews = [review for review in reviews if review.status == review_status]
@@ -346,7 +346,7 @@ async def update_expert_review(
     ],
 ) -> ExpertReviewCase:
     repository = get_repository()
-    value = await run_in_threadpool(repository.get, "expert_review", review_id)
+    value = await run_database(repository.get, "expert_review", review_id)
     if value is None:
         raise HTTPException(status_code=404, detail="Expert review not found")
     review = ExpertReviewCase.model_validate(value)
@@ -361,7 +361,7 @@ async def update_expert_review(
     if review.status == ReviewStatus.COMPLETED and not review.resolution_note:
         raise HTTPException(status_code=422, detail="Completed reviews require a note")
     review.updated_at = datetime.now(UTC)
-    await run_in_threadpool(repository.put, "expert_review", review.id, review)
+    await run_database(repository.put, "expert_review", review.id, review)
     return review
 
 
@@ -380,7 +380,7 @@ async def register_evaluation_dataset(
 ) -> list[EvaluationCase]:
     repository = get_repository()
     for case in dataset.cases:
-        await run_in_threadpool(repository.put, "evaluation_case", case.id, case)
+        await run_database(repository.put, "evaluation_case", case.id, case)
     return dataset.cases
 
 
@@ -390,7 +390,7 @@ async def register_evaluation_dataset(
     tags=["evaluation"],
 )
 async def list_evaluation_dataset() -> list[EvaluationCase]:
-    values = await run_in_threadpool(get_repository().list, "evaluation_case")
+    values = await run_database(get_repository().list, "evaluation_case")
     return [EvaluationCase.model_validate(value) for value in values]
 
 
@@ -429,7 +429,7 @@ async def run_evaluation(
     ],
 ) -> EvaluationRun:
     repository = get_repository()
-    values = await run_in_threadpool(repository.list, "evaluation_case")
+    values = await run_database(repository.list, "evaluation_case")
     cases = [EvaluationCase.model_validate(value) for value in values]
     if not cases:
         raise HTTPException(status_code=409, detail="Evaluation dataset is empty")
@@ -476,12 +476,12 @@ async def run_evaluation(
         ),
         cases=results,
     )
-    await run_in_threadpool(repository.put, "evaluation_run", run.id, run)
+    await run_database(repository.put, "evaluation_run", run.id, run)
     return run
 
 
 @app.get("/api/v1/evaluations/runs", response_model=list[EvaluationRun], tags=["evaluation"])
 async def list_evaluation_runs() -> list[EvaluationRun]:
-    values = await run_in_threadpool(get_repository().list, "evaluation_run")
+    values = await run_database(get_repository().list, "evaluation_run")
     runs = [EvaluationRun.model_validate(value) for value in values]
     return sorted(runs, key=lambda run: run.created_at, reverse=True)
